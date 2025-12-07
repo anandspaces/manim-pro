@@ -71,6 +71,28 @@ def load_jobs_from_disk():
     except Exception as e:
         logger.error(f"Failed to load jobs: {e}")
 
+def auto_fix_script(script: str) -> str:
+    """Automatically fix common errors in generated scripts."""
+    
+    # Fix rate functions
+    rate_func_fixes = {
+        'ease_in_out_sine': 'smooth',
+        'ease_in_sine': 'slow_into',
+        'ease_out_sine': 'rush_from',
+        'ease_in_out': 'smooth',
+        'ease_in': 'rush_into',
+        'ease_out': 'rush_from',
+        'ease_in_out_quad': 'smooth',
+        'ease_in_out_cubic': 'smooth',
+    }
+    
+    for old, new in rate_func_fixes.items():
+        if old in script:
+            logger.info(f"Auto-fixing: Replacing '{old}' with '{new}'")
+            script = script.replace(old, new)
+    
+    return script
+
 # --- Core Service Functions ---
 
 def generate_script_with_gemini(topic: str, description: Optional[str]) -> str:
@@ -108,12 +130,42 @@ CRITICAL SYNTAX RULES:
 - Always test that your code would run without errors
 - Use only documented Manim methods and classes
 
+CRITICAL IMPORT AND RATE FUNCTION RULES:
+- ONLY import from manim: from manim import *
+- NEVER import from manim.utils.rate_functions
+- AVAILABLE rate functions: smooth, linear, rush_into, rush_from, slow_into, there_and_back
+- USE 'smooth' instead of ease_in_out_sine, ease_in_out, or any other easing function
+- USE 'rush_into' instead of ease_in
+- USE 'rush_from' instead of ease_out
+
+Example of CORRECT rate function usage:
+```python
+from manim import *
+
+class MyScene(Scene):
+    def construct(self):
+        circle = Circle()
+        # CORRECT - using smooth
+        self.play(Create(circle), rate_func=smooth)
+        self.wait(1)
+```
+
+Example of INCORRECT usage (DO NOT DO THIS):
+```python
+# WRONG - ease_in_out_sine is not defined
+self.play(Create(circle), rate_func=ease_in_out_sine)
+
+# WRONG - don't import from utils
+from manim.utils.rate_functions import ease_in_out_sine
+```
+
 IMPORTANT: 
 - Return ONLY the Python code, no explanations
 - Do not include markdown code blocks (no ```python```)
 - Start directly with imports
 - Make it production-ready
-- Test syntax mentally before generating
+- Only use: smooth, linear, rush_into, rush_from, slow_into, there_and_back
+- When in doubt, use smooth for easing
 
 Example structure:
 from manim import *
@@ -125,8 +177,8 @@ class {class_name}(Scene):  # or ThreeDScene
         circle = Circle()
         text = Text("Hello")
         
-        # Animate them (NO RunAnimation!)
-        self.play(Create(circle), Write(text))
+        # Animate them (using smooth instead of ease_in_out_sine)
+        self.play(Create(circle), Write(text), rate_func=smooth)
         self.wait(1)
 """
 
@@ -138,6 +190,9 @@ class {class_name}(Scene):  # or ThreeDScene
             script = script.replace("```python", "").replace("```", "").strip()
         elif script.startswith("```"):
             script = script.replace("```", "").strip()
+        
+        # Auto-fix common errors
+        script = auto_fix_script(script)
         
         return script
         
@@ -208,7 +263,7 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
         logger.error(f"[{job_id}] Render timeout")
         jobs_store[job_id]["status"] = "failed"
         jobs_store[job_id]["message"] = "Rendering timeout"
-        jobs_store[job_id]["error"] = "Render took too long (>5 minutes)"
+        jobs_store[job_id]["error"] = "Render took too long (>10 minutes)"
         jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
         save_job_to_disk(job_id)
         

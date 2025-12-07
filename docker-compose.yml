@@ -3,33 +3,62 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+
     container_name: manim-ai-server
     restart: unless-stopped
+    
     ports:
       - "8020:8020"
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+    
     env_file:
       - .env
+    
     volumes:
+      # Persistent storage
       - ./media:/app/media
       - ./scripts:/app/scripts
       - ./jobs:/app/jobs
+      - ./logs:/app/logs
+
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8020/health')"]
+      test: ["CMD", "python3", "-c", "import requests; requests.get('http://localhost:8020/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    
     networks:
       - manim-network
+    
     deploy:
       resources:
         limits:
-          cpus: '2'
-          memory: 4G
+          cpus: '4'
+          memory: 6G
         reservations:
-          cpus: '1'
-          memory: 2G
+          cpus: '2'
+          memory: 3G
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # Process limits
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
 networks:
   manim-network:
     driver: bridge
+    name: manim-network
