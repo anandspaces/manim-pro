@@ -1,0 +1,35 @@
+services:
+  manim-ai-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: manim-ai-server
+    restart: unless-stopped
+    ports:
+      - "8020:8020"
+    env_file:
+      - .env
+    volumes:
+      - ./media:/app/media
+      - ./scripts:/app/scripts
+      - ./jobs:/app/jobs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8020/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - manim-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+networks:
+  manim-network:
+    driver: bridge
