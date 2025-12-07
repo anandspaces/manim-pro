@@ -2,6 +2,7 @@ import logging
 import subprocess
 import json
 import uuid
+import re
 from pathlib import Path
 from typing import Optional, Dict
 from datetime import datetime
@@ -71,6 +72,60 @@ def load_jobs_from_disk():
     except Exception as e:
         logger.error(f"Failed to load jobs: {e}")
 
+def validate_script_safety(script: str) -> tuple[bool, str]:
+    """
+    Validate script for performance-killing patterns.
+    Returns: (is_safe, error_message)
+    """
+    issues = []
+    
+    # Check for too many particles
+    particle_match = re.search(r'num_particles\s*=\s*(\d+)', script)
+    if particle_match:
+        num = int(particle_match.group(1))
+        if num > 15:
+            issues.append(f"Too many particles ({num}). Max allowed: 15")
+    
+    # Check for physics updaters (very slow)
+    if 'add_updater' in script:
+        issues.append("Physics updaters (add_updater) are too slow for rendering")
+    
+    # Check for nested loops creating objects
+    if re.search(r'for.*for.*\.(add|play)', script, re.DOTALL):
+        issues.append("Nested loops creating objects will be too slow")
+    
+    # Count total objects being created
+    create_count = len(re.findall(r'\b(Circle|Square|Dot|Sphere|Cube|Text|Line|Arrow)\(', script))
+    if create_count > 25:
+        issues.append(f"Too many objects ({create_count}). Max recommended: 25")
+    
+    # Check for 3D scenes with many objects
+    if 'ThreeDScene' in script and create_count > 15:
+        issues.append("3D scenes with >15 objects are too slow")
+    
+    # Check total duration
+    total_wait = 0
+    for wait in re.findall(r'self\.wait\(([^)]+)\)', script):
+        try:
+            total_wait += float(eval(wait))
+        except:
+            pass
+    
+    total_runtime = 0
+    for runtime in re.findall(r'run_time\s*=\s*([^,)]+)', script):
+        try:
+            total_runtime += float(eval(runtime))
+        except:
+            pass
+    
+    estimated_duration = total_wait + total_runtime
+    if estimated_duration > 12:
+        issues.append(f"Estimated duration {estimated_duration:.1f}s exceeds 10s limit")
+    
+    if issues:
+        return False, " | ".join(issues)
+    return True, "Script validated successfully"
+
 def auto_fix_script(script: str) -> str:
     """Automatically fix common errors in generated scripts."""
     
@@ -106,86 +161,98 @@ def generate_script_with_gemini(topic: str, description: Optional[str]) -> str:
         
         class_name = sanitize_class_name(topic)
         
-        prompt = f"""You are an expert Manim animation developer. Generate a complete, working Manim script for the following:
+        prompt = f"""You are an expert Manim animation developer. Generate a SIMPLE, FAST-RENDERING Manim script.
 
 Topic: {topic}
 {f'Description: {description}' if description else ''}
 
-Requirements:
-1. Use the class name: {class_name}
-2. The script must be complete and executable
-3. Use modern Manim syntax (from manim import *)
-4. Include interesting visual effects and animations
-5. Make it educational and visually appealing
-6. Use 3D scenes if appropriate (ThreeDScene)
-7. Add smooth transitions and camera movements
-8. Duration should be 8-12 seconds
-9. Use appropriate colors and styling
-10. Include necessary imports (numpy, etc.)
+CRITICAL PERFORMANCE RULES (MUST FOLLOW):
+1. **NO physics simulations** (no add_updater, no particle systems)
+2. **NO 3D scenes** (use Scene, NOT ThreeDScene)
+3. **Maximum 10 objects total** in the entire animation
+4. **Simple shapes only** (Circle, Square, Text, Line, Arrow - NO Sphere/Cube)
+5. **Total duration: 8-10 seconds MAXIMUM**
+6. **Use Scene class, NOT ThreeDScene**
+
+DURATION BREAKDOWN (EXACTLY 10 SECONDS):
+- Title/Intro: 2 seconds
+- Main content: 5 seconds  
+- Outro: 2 seconds
+- Buffer: 1 second
+= **10 SECONDS TOTAL**
+
+ALLOWED:
+- Simple 2D shapes (Circle, Square, Rectangle, Text)
+- Transformations (Transform, ReplacementTransform)
+- Movement (shift, move_to, animate.scale)
+- Basic animations (Create, Write, FadeIn, FadeOut)
+- Color changes and rotations
+- Max 10 objects
+
+FORBIDDEN (TOO SLOW):
+- ThreeDScene, Sphere, Cube (3D is slow!)
+- add_updater, physics simulations
+- Particle systems, random particles
+- More than 10 objects
+- Nested loops creating objects
+- Complex calculations per frame
+- Ambient camera rotation
+
+Example CORRECT script (10 seconds):
+```python
+from manim import *
+
+class {class_name}(Scene):
+    def construct(self):
+        # Title (2s)
+        title = Text("{topic}", font_size=48)
+        self.play(Write(title), run_time=1.5)
+        self.wait(0.5)
+        
+        # Main (5s)
+        self.play(title.animate.scale(0.6).to_edge(UP), run_time=1)
+        
+        circle = Circle(radius=1, color=BLUE)
+        square = Square(side_length=2, color=RED)
+        
+        self.play(Create(circle), run_time=1.5)
+        self.play(Transform(circle, square), run_time=2)
+        self.wait(0.5)
+        
+        # Outro (2s)
+        self.play(
+            FadeOut(title),
+            FadeOut(circle),
+            run_time=1.5
+        )
+        self.wait(0.5)
+```
+
+Example FORBIDDEN (will timeout):
+```python
+# WRONG - DON'T DO THIS
+class BadScene(ThreeDScene):  # NO 3D!
+    def construct(self):
+        for i in range(50):  # Too many objects!
+            sphere = Sphere()  # 3D objects are slow!
+            particles.add_updater(...)  # Physics is VERY slow!
+```
 
 CRITICAL SYNTAX RULES:
-- NEVER use RunAnimation() - it's deprecated
-- Pass animations directly to self.play(): self.play(Create(obj), Write(text))
-- For 3D scenes, use self.move_camera() or self.begin_ambient_camera_rotation()
-- Always test that your code would run without errors
-- Use only documented Manim methods and classes
+- Class name: {class_name}
+- Use Scene (NOT ThreeDScene)
+- ONLY import: from manim import *
+- Rate functions: smooth, linear, rush_into, rush_from (NO ease_in_out_sine!)
+- Return ONLY Python code (no markdown, no explanations)
+- Keep it SIMPLE for fast rendering
 
-CRITICAL IMPORT AND RATE FUNCTION RULES:
-- ONLY import from manim: from manim import *
-- NEVER import from manim.utils.rate_functions
-- AVAILABLE rate functions: smooth, linear, rush_into, rush_from, slow_into, there_and_back
-- USE 'smooth' instead of ease_in_out_sine, ease_in_out, or any other easing function
-- USE 'rush_into' instead of ease_in
-- USE 'rush_from' instead of ease_out
-
-Example of CORRECT rate function usage:
-```python
-from manim import *
-
-class MyScene(Scene):
-    def construct(self):
-        circle = Circle()
-        # CORRECT - using smooth
-        self.play(Create(circle), rate_func=smooth)
-        self.wait(1)
-```
-
-Example of INCORRECT usage (DO NOT DO THIS):
-```python
-# WRONG - ease_in_out_sine is not defined
-self.play(Create(circle), rate_func=ease_in_out_sine)
-
-# WRONG - don't import from utils
-from manim.utils.rate_functions import ease_in_out_sine
-```
-
-IMPORTANT: 
-- Return ONLY the Python code, no explanations
-- Do not include markdown code blocks (no ```python```)
-- Start directly with imports
-- Make it production-ready
-- Only use: smooth, linear, rush_into, rush_from, slow_into, there_and_back
-- When in doubt, use smooth for easing
-
-Example structure:
-from manim import *
-import numpy as np
-
-class {class_name}(Scene):  # or ThreeDScene
-    def construct(self):
-        # Create objects
-        circle = Circle()
-        text = Text("Hello")
-        
-        # Animate them (using smooth instead of ease_in_out_sine)
-        self.play(Create(circle), Write(text), rate_func=smooth)
-        self.wait(1)
+Generate a SIMPLE 2D animation that renders in under 2 minutes:
 """
 
         response = model.generate_content(prompt)
         script = response.text.strip()
         
-        # Clean up markdown code blocks if present
+        # Clean up markdown code blocks
         if script.startswith("```python"):
             script = script.replace("```python", "").replace("```", "").strip()
         elif script.startswith("```"):
@@ -194,10 +261,20 @@ class {class_name}(Scene):  # or ThreeDScene
         # Auto-fix common errors
         script = auto_fix_script(script)
         
+        # Validate script
+        is_safe, validation_msg = validate_script_safety(script)
+        logger.info(f"Script validation: {validation_msg}")
+        
+        if not is_safe:
+            logger.warning(f"Script validation failed: {validation_msg}")
+            logger.warning("Attempting to generate simpler script...")
+            # Try again with even stricter prompt
+            raise ValueError(f"Generated script failed validation: {validation_msg}")
+        
         return script
         
     except Exception as e:
-        logger.error(f"Gemini API error: {e}")
+        logger.error(f"Script generation error: {e}")
         raise Exception(f"Failed to generate script: {str(e)}")
 
 def render_animation(job_id: str, script_path: Path, class_name: str):
@@ -225,12 +302,19 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
             cmd,
             capture_output=True,
             text=True,
-            timeout=RENDER_TIMEOUT
+            timeout=RENDER_TIMEOUT,
+            cwd=str(SCRIPTS_DIR.parent)
         )
+        
+        # Log output for debugging
+        if result.stdout:
+            logger.info(f"[{job_id}] Manim stdout: {result.stdout[-500:]}")
+        if result.stderr:
+            logger.warning(f"[{job_id}] Manim stderr: {result.stderr[-500:]}")
         
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown rendering error"
-            logger.error(f"[{job_id}] Render failed: {error_msg}")
+            logger.error(f"[{job_id}] Render failed (exit {result.returncode})")
             jobs_store[job_id]["status"] = "failed"
             jobs_store[job_id]["message"] = "Rendering failed"
             jobs_store[job_id]["error"] = error_msg
@@ -244,15 +328,18 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
         
         if not video_path:
             logger.error(f"[{job_id}] Video file not found: {video_name}")
+            existing_files = list(MEDIA_ROOT.rglob("*.mp4"))
+            logger.info(f"[{job_id}] Found {len(existing_files)} MP4 files")
+            
             jobs_store[job_id]["status"] = "failed"
             jobs_store[job_id]["message"] = "Video file not found after rendering"
-            jobs_store[job_id]["error"] = f"Expected video: {video_name}"
+            jobs_store[job_id]["error"] = f"Expected: {video_name}"
             jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
             save_job_to_disk(job_id)
             return
         
         # Success!
-        logger.info(f"[{job_id}] Render completed successfully: {video_name}")
+        logger.info(f"[{job_id}] Render completed: {video_name}")
         jobs_store[job_id]["status"] = "completed"
         jobs_store[job_id]["message"] = "Animation completed successfully"
         jobs_store[job_id]["video_name"] = video_name
@@ -260,15 +347,15 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
         save_job_to_disk(job_id)
         
     except subprocess.TimeoutExpired:
-        logger.error(f"[{job_id}] Render timeout")
+        logger.error(f"[{job_id}] Render timeout after {RENDER_TIMEOUT}s")
         jobs_store[job_id]["status"] = "failed"
-        jobs_store[job_id]["message"] = "Rendering timeout"
-        jobs_store[job_id]["error"] = "Render took too long (>10 minutes)"
+        jobs_store[job_id]["message"] = "Rendering timeout - script too complex"
+        jobs_store[job_id]["error"] = f"Exceeded {RENDER_TIMEOUT}s timeout. Use simpler animations (no 3D, no physics)."
         jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
         save_job_to_disk(job_id)
         
     except Exception as e:
-        logger.exception(f"[{job_id}] Unexpected error during render")
+        logger.exception(f"[{job_id}] Unexpected render error")
         jobs_store[job_id]["status"] = "failed"
         jobs_store[job_id]["message"] = "Rendering failed"
         jobs_store[job_id]["error"] = str(e)
@@ -344,7 +431,7 @@ def retry_job(job_id: str) -> dict:
     
     # Reset job status
     jobs_store[job_id]["status"] = "generating_script"
-    jobs_store[job_id]["message"] = "Regenerating animation script with AI..."
+    jobs_store[job_id]["message"] = "Regenerating simpler animation script..."
     jobs_store[job_id]["error"] = None
     jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
     save_job_to_disk(job_id)
