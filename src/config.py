@@ -26,7 +26,7 @@ GEMINI_MODEL = "gemini-3-pro-preview"
 
 # Rendering settings
 RENDER_TIMEOUT = 600  # 10 minutes
-RENDER_QUALITY = "-pql"  # preview quality low
+RENDER_QUALITY = "-ql"  # preview quality low
 
 # Logging
 LOG_LEVEL = "INFO"

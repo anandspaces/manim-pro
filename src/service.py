@@ -119,15 +119,9 @@ Requirements:
 5. Make it educational and visually appealing
 6. Use 3D scenes if appropriate (ThreeDScene)
 7. Add smooth transitions and camera movements
-8. Duration should be 6-10 seconds
+8. Duration should be 8-12 seconds
 9. Use appropriate colors and styling
 10. Include necessary imports (numpy, etc.)
-
-CRITICAL DURATION RULES:
-- Keep animations SHORT and CONCISE
-- Use self.wait() sparingly (max 1-2 seconds total)
-- Aim for 6-10 seconds total runtime
-- Count your wait times to ensure you don't exceed 10 seconds
 
 CRITICAL SYNTAX RULES:
 - NEVER use RunAnimation() - it's deprecated
@@ -135,7 +129,6 @@ CRITICAL SYNTAX RULES:
 - For 3D scenes, use self.move_camera() or self.begin_ambient_camera_rotation()
 - Always test that your code would run without errors
 - Use only documented Manim methods and classes
-- Keep animations SIMPLE to ensure fast rendering
 
 CRITICAL IMPORT AND RATE FUNCTION RULES:
 - ONLY import from manim: from manim import *
@@ -145,53 +138,34 @@ CRITICAL IMPORT AND RATE FUNCTION RULES:
 - USE 'rush_into' instead of ease_in
 - USE 'rush_from' instead of ease_out
 
-PERFORMANCE OPTIMIZATION:
-- Avoid complex 3D scenes with many objects
-- Limit particle systems to < 20 objects
-- Use simple shapes when possible
-- Avoid nested loops creating many objects
-- Keep total object count under 30
-- Userun_time parameter to speed up animations
-
-Example of CORRECT 10-second animation:
+Example of CORRECT rate function usage:
 ```python
 from manim import *
 
 class MyScene(Scene):
     def construct(self):
-        # Title - 2 seconds
-        title = Text("Topic")
-        self.play(Write(title), run_time=1.5)
-        self.wait(0.5)
-        
-        # Main content - 5 seconds
-        self.play(title.animate.scale(0.5).to_edge(UP), run_time=1)
-        circle = Circle(color=BLUE)
-        self.play(Create(circle), run_time=2)
-        self.play(circle.animate.set_fill(BLUE, opacity=0.5), run_time=2)
-        
-        # Outro - 2.5 seconds
-        self.play(FadeOut(title), FadeOut(circle), run_time=2)
-        self.wait(0.5)
-        # Total: 1.5 + 0.5 + 1 + 2 + 2 + 2 + 0.5 = 9.5 seconds ✓
+        circle = Circle()
+        # CORRECT - using smooth
+        self.play(Create(circle), rate_func=smooth)
+        self.wait(1)
 ```
 
-Example of INCORRECT (TOO LONG):
+Example of INCORRECT usage (DO NOT DO THIS):
 ```python
-# WRONG - This would take 25+ seconds
-self.wait(3)  # Too long
-self.play(Create(obj), run_time=5)  # Too slow
-for i in range(100):  # Too many objects
-    self.play(Create(Circle()))  # Way too long
+# WRONG - ease_in_out_sine is not defined
+self.play(Create(circle), rate_func=ease_in_out_sine)
+
+# WRONG - don't import from utils
+from manim.utils.rate_functions import ease_in_out_sine
 ```
 
 IMPORTANT: 
 - Return ONLY the Python code, no explanations
 - Do not include markdown code blocks (no ```python```)
 - Start directly with imports
-- Make it production-ready and FAST
-- Maximum 10 seconds total duration
-- Keep it simple for quick rendering
+- Make it production-ready
+- Only use: smooth, linear, rush_into, rush_from, slow_into, there_and_back
+- When in doubt, use smooth for easing
 
 Example structure:
 from manim import *
@@ -199,18 +173,13 @@ import numpy as np
 
 class {class_name}(Scene):  # or ThreeDScene
     def construct(self):
-        # Quick intro (1-2s)
-        title = Text("{topic}")
-        self.play(Write(title), run_time=1)
-        self.wait(0.5)
+        # Create objects
+        circle = Circle()
+        text = Text("Hello")
         
-        # Main content (5-6s)
-        self.play(title.animate.to_edge(UP), run_time=1)
-        # Add 2-3 quick animations here
-        
-        # Quick outro (1-2s)
-        self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=1.5)
-        self.wait(0.5)
+        # Animate them (using smooth instead of ease_in_out_sine)
+        self.play(Create(circle), Write(text), rate_func=smooth)
+        self.wait(1)
 """
 
         response = model.generate_content(prompt)
@@ -256,19 +225,12 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
             cmd,
             capture_output=True,
             text=True,
-            timeout=RENDER_TIMEOUT,
-            cwd=str(SCRIPTS_DIR.parent)  # Run from app directory
+            timeout=RENDER_TIMEOUT
         )
-        
-        # Log output for debugging
-        if result.stdout:
-            logger.info(f"[{job_id}] Manim stdout: {result.stdout[-500:]}")  # Last 500 chars
-        if result.stderr:
-            logger.warning(f"[{job_id}] Manim stderr: {result.stderr[-500:]}")
         
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown rendering error"
-            logger.error(f"[{job_id}] Render failed (exit {result.returncode}): {error_msg}")
+            logger.error(f"[{job_id}] Render failed: {error_msg}")
             jobs_store[job_id]["status"] = "failed"
             jobs_store[job_id]["message"] = "Rendering failed"
             jobs_store[job_id]["error"] = error_msg
@@ -282,14 +244,9 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
         
         if not video_path:
             logger.error(f"[{job_id}] Video file not found: {video_name}")
-            logger.info(f"[{job_id}] Searching in MEDIA_ROOT: {MEDIA_ROOT}")
-            # List what files exist
-            existing_files = list(MEDIA_ROOT.rglob("*.mp4"))
-            logger.info(f"[{job_id}] Found {len(existing_files)} MP4 files: {[f.name for f in existing_files[:10]]}")
-            
             jobs_store[job_id]["status"] = "failed"
             jobs_store[job_id]["message"] = "Video file not found after rendering"
-            jobs_store[job_id]["error"] = f"Expected video: {video_name}, found {len(existing_files)} other videos"
+            jobs_store[job_id]["error"] = f"Expected video: {video_name}"
             jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
             save_job_to_disk(job_id)
             return
@@ -303,10 +260,10 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
         save_job_to_disk(job_id)
         
     except subprocess.TimeoutExpired:
-        logger.error(f"[{job_id}] Render timeout after {RENDER_TIMEOUT} seconds")
+        logger.error(f"[{job_id}] Render timeout")
         jobs_store[job_id]["status"] = "failed"
-        jobs_store[job_id]["message"] = "Rendering timeout - animation too complex"
-        jobs_store[job_id]["error"] = f"Render exceeded {RENDER_TIMEOUT}s timeout. The generated script may be too complex or have infinite loops."
+        jobs_store[job_id]["message"] = "Rendering timeout"
+        jobs_store[job_id]["error"] = "Render took too long (>10 minutes)"
         jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
         save_job_to_disk(job_id)
         
