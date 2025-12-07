@@ -33,7 +33,7 @@ LOG_LEVEL = "INFO"
 
 # Get API configuration from environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro")  # Default to gemini-pro
+GEMINI_MODEL = "gemini-3-pro-preview"
 
 # Create directories if they don't exist
 SCRIPTS_DIR.mkdir(exist_ok=True)
