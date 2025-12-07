@@ -11,8 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libcairo2-dev \
     libpango1.0-dev \
-    libpangocairo-1.0-dev \
-    libpangoft2-1.0-dev \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -42,7 +40,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
-    libpangoft2-1.0-0 \
     # 3D rendering support
     libglew2.2 \
     libglfw3 \
@@ -52,7 +49,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-latex-extra \
     texlive-fonts-recommended \
     texlive-fonts-extra \
-    texlive-latex-recommended \
     texlive-science \
     # Process management
     tini \
