@@ -1,5 +1,7 @@
 import uvicorn
 import logging
+import time
+from contextlib import asynccontextmanager
 from src.config import (
     MEDIA_ROOT, SCRIPTS_DIR, JOBS_DIR, 
     GEMINI_API_KEY, GEMINI_MODEL
@@ -8,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.routes import router
 from src.service import load_jobs_from_disk
+from src.redis_client import redis_client
 
 # Setup logging
 logging.basicConfig(
@@ -17,10 +20,49 @@ logging.basicConfig(
 logger = logging.getLogger("manim_ai_server")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
+    logger.info("Starting up Manim AI Server...")
+    
+    # Wait a bit for Redis to be fully ready
+    logger.info("Waiting for Redis to be ready...")
+    time.sleep(3)
+    
+    # Try to connect to Redis
+    try:
+        redis_client._connect_with_retry(max_retries=15, retry_delay=2)
+        logger.info("✓ Redis connection established")
+    except Exception as e:
+        logger.error(f"✗ Failed to connect to Redis: {e}")
+        logger.warning("Server will start anyway, but jobs may not work until Redis is available")
+    
+    # Load jobs from disk
+    try:
+        load_jobs_from_disk()
+        logger.info("✓ Jobs loaded from disk")
+    except Exception as e:
+        logger.error(f"✗ Failed to load jobs: {e}")
+    
+    logger.info("✓ Manim AI Server startup complete")
+    
+    yield  # Server runs here
+    
+    # Shutdown
+    logger.info("Shutting down Manim AI Server...")
+    try:
+        redis_client.close()
+        logger.info("✓ Redis connection closed")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
+
+
 app = FastAPI(
     title="ManimPro AI Animation Server",
     version="2.0",
-    description="AI-powered Manim animation generation server"
+    description="AI-powered Manim animation generation server",
+    lifespan=lifespan
 )
 
 # CORS middleware
@@ -34,12 +76,6 @@ app.add_middleware(
 
 # Include routes
 app.include_router(router)
-
-# Startup event
-@app.on_event("startup")
-async def startup():
-    """Initialize on startup"""
-    load_jobs_from_disk()
 
 
 def startup_message():
