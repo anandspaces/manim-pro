@@ -4,7 +4,7 @@ FROM python:3.13-slim AS builder
 # Set working directory
 WORKDIR /app
 
-# Install build dependencies
+# Install build dependencies and uv
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -12,12 +12,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2-dev \
     libpango1.0-dev \
     python3-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Set uv environment variables
+ENV UV_SYSTEM_PYTHON=1
+
+# Copy project files
 COPY pyproject.toml .
-RUN pip install --no-cache-dir --user --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir --user .
+
+# Install dependencies with uv
+RUN uv pip install --no-cache .
 
 # Verify manim installation
 RUN python3 -c "import manim; print(f'Manim {manim.__version__} installed successfully')"
@@ -30,8 +38,8 @@ FROM python:3.13-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PATH=/root/.local/bin:$PATH \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    UV_SYSTEM_PYTHON=1
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -61,7 +69,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy Python packages from builder
-COPY --from=builder /root/.local /root/.local
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY . .
@@ -73,6 +82,7 @@ RUN mkdir -p /app/media /app/scripts /app/jobs /app/logs && \
 # Verify installation
 RUN python3 -c "from manim import *; print('✓ Manim imported successfully')" && \
     python3 -c "from manim import smooth, linear, rush_into; print('✓ Rate functions available')" && \
+    python3 -c "import redis; print('✓ Redis client installed')" && \
     ffmpeg -version | head -n 1 && \
     echo "✓ Container build successful"
 
