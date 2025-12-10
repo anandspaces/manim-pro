@@ -12,11 +12,9 @@ from src.config import (
     GEMINI_API_KEY, GEMINI_MODEL, SCRIPTS_DIR, 
     JOBS_DIR, MEDIA_ROOT, RENDER_TIMEOUT, RENDER_QUALITY
 )
+from src.redis_client import redis_client
 
 logger = logging.getLogger("manim_ai_server")
-
-# In-memory job store (use Redis/DB in production)
-jobs_store: Dict[str, dict] = {}
 
 # --- Helper Functions ---
 
@@ -51,26 +49,40 @@ def sanitize_class_name(topic: str) -> str:
         
     return class_name + "Scene"
 
-def save_job_to_disk(job_id: str):
-    """Persist job data to disk."""
+def save_job_to_disk(job_id: str, job_data: dict):
+    """Persist job data to disk as backup."""
     try:
         job_file = JOBS_DIR / f"{job_id}.json"
         with open(job_file, 'w') as f:
-            json.dump(jobs_store[job_id], f, indent=2)
+            json.dump(job_data, f, indent=2)
     except Exception as e:
-        logger.error(f"Failed to save job {job_id}: {e}")
+        logger.error(f"Failed to save job {job_id} to disk: {e}")
 
 def load_jobs_from_disk():
-    """Load all jobs from disk on startup."""
+    """Load all jobs from disk on startup (migration from old system)."""
     try:
+        count = 0
         for job_file in JOBS_DIR.glob("*.json"):
-            with open(job_file, 'r') as f:
-                job_data = json.load(f)
-                job_id = job_file.stem
-                jobs_store[job_id] = job_data
-        logger.info(f"Loaded {len(jobs_store)} jobs from disk")
+            try:
+                with open(job_file, 'r') as f:
+                    job_data = json.load(f)
+                    job_id = job_file.stem
+                    
+                    # Check if job already exists in Redis
+                    if not redis_client.get_job(job_id):
+                        redis_client.save_job(job_id, job_data)
+                        count += 1
+            except Exception as e:
+                logger.error(f"Failed to load job from {job_file}: {e}")
+        
+        if count > 0:
+            logger.info(f"Migrated {count} jobs from disk to Redis")
+        
+        # Cleanup expired jobs
+        redis_client.cleanup_expired_jobs()
+        
     except Exception as e:
-        logger.error(f"Failed to load jobs: {e}")
+        logger.error(f"Failed to load jobs from disk: {e}")
 
 def validate_script_safety(script: str) -> tuple[bool, str]:
     """
@@ -228,16 +240,6 @@ class {class_name}(Scene):
         self.wait(0.5)
 ```
 
-Example FORBIDDEN (will timeout):
-```python
-# WRONG - DON'T DO THIS
-class BadScene(ThreeDScene):  # NO 3D!
-    def construct(self):
-        for i in range(50):  # Too many objects!
-            sphere = Sphere()  # 3D objects are slow!
-            particles.add_updater(...)  # Physics is VERY slow!
-```
-
 CRITICAL SYNTAX RULES:
 - Class name: {class_name}
 - Use Scene (NOT ThreeDScene)
@@ -268,7 +270,6 @@ Generate a SIMPLE 2D animation that renders in under 2 minutes:
         if not is_safe:
             logger.warning(f"Script validation failed: {validation_msg}")
             logger.warning("Attempting to generate simpler script...")
-            # Try again with even stricter prompt
             raise ValueError(f"Generated script failed validation: {validation_msg}")
         
         return script
@@ -282,11 +283,14 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
     try:
         logger.info(f"[{job_id}] Starting render for {class_name}")
         
-        # Update job status
-        jobs_store[job_id]["status"] = "rendering"
-        jobs_store[job_id]["message"] = "Rendering animation..."
-        jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
-        save_job_to_disk(job_id)
+        # Update job status in Redis
+        job = redis_client.get_job(job_id)
+        if job:
+            job["status"] = "rendering"
+            job["message"] = "Rendering animation..."
+            job["updated_at"] = datetime.now().isoformat()
+            redis_client.save_job(job_id, job)
+            save_job_to_disk(job_id, job)
         
         # Run manim command
         cmd = [
@@ -315,11 +319,14 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown rendering error"
             logger.error(f"[{job_id}] Render failed (exit {result.returncode})")
-            jobs_store[job_id]["status"] = "failed"
-            jobs_store[job_id]["message"] = "Rendering failed"
-            jobs_store[job_id]["error"] = error_msg
-            jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
-            save_job_to_disk(job_id)
+            
+            if job:
+                job["status"] = "failed"
+                job["message"] = "Rendering failed"
+                job["error"] = error_msg
+                job["updated_at"] = datetime.now().isoformat()
+                redis_client.save_job(job_id, job)
+                save_job_to_disk(job_id, job)
             return
         
         # Find generated video
@@ -331,36 +338,49 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
             existing_files = list(MEDIA_ROOT.rglob("*.mp4"))
             logger.info(f"[{job_id}] Found {len(existing_files)} MP4 files")
             
-            jobs_store[job_id]["status"] = "failed"
-            jobs_store[job_id]["message"] = "Video file not found after rendering"
-            jobs_store[job_id]["error"] = f"Expected: {video_name}"
-            jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
-            save_job_to_disk(job_id)
+            if job:
+                job["status"] = "failed"
+                job["message"] = "Video file not found after rendering"
+                job["error"] = f"Expected: {video_name}"
+                job["updated_at"] = datetime.now().isoformat()
+                redis_client.save_job(job_id, job)
+                save_job_to_disk(job_id, job)
             return
         
         # Success!
         logger.info(f"[{job_id}] Render completed: {video_name}")
-        jobs_store[job_id]["status"] = "completed"
-        jobs_store[job_id]["message"] = "Animation completed successfully"
-        jobs_store[job_id]["video_name"] = video_name
-        jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
-        save_job_to_disk(job_id)
+        
+        if job:
+            job["status"] = "completed"
+            job["message"] = "Animation completed successfully"
+            job["video_name"] = video_name
+            job["updated_at"] = datetime.now().isoformat()
+            redis_client.save_job(job_id, job)
+            save_job_to_disk(job_id, job)
         
     except subprocess.TimeoutExpired:
         logger.error(f"[{job_id}] Render timeout after {RENDER_TIMEOUT}s")
-        jobs_store[job_id]["status"] = "failed"
-        jobs_store[job_id]["message"] = "Rendering timeout - script too complex"
-        jobs_store[job_id]["error"] = f"Exceeded {RENDER_TIMEOUT}s timeout. Use simpler animations (no 3D, no physics)."
-        jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
-        save_job_to_disk(job_id)
+        
+        job = redis_client.get_job(job_id)
+        if job:
+            job["status"] = "failed"
+            job["message"] = "Rendering timeout - script too complex"
+            job["error"] = f"Exceeded {RENDER_TIMEOUT}s timeout. Use simpler animations."
+            job["updated_at"] = datetime.now().isoformat()
+            redis_client.save_job(job_id, job)
+            save_job_to_disk(job_id, job)
         
     except Exception as e:
         logger.exception(f"[{job_id}] Unexpected render error")
-        jobs_store[job_id]["status"] = "failed"
-        jobs_store[job_id]["message"] = "Rendering failed"
-        jobs_store[job_id]["error"] = str(e)
-        jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
-        save_job_to_disk(job_id)
+        
+        job = redis_client.get_job(job_id)
+        if job:
+            job["status"] = "failed"
+            job["message"] = "Rendering failed"
+            job["error"] = str(e)
+            job["updated_at"] = datetime.now().isoformat()
+            redis_client.save_job(job_id, job)
+            save_job_to_disk(job_id, job)
 
 def create_animation_job(topic: str, description: Optional[str]) -> dict:
     """Create a new animation job and generate script."""
@@ -369,7 +389,7 @@ def create_animation_job(topic: str, description: Optional[str]) -> dict:
     logger.info(f"[{job_id}] New animation request - Topic: {topic}")
     
     # Initialize job
-    jobs_store[job_id] = {
+    job_data = {
         "job_id": job_id,
         "status": "generating_script",
         "message": "Generating animation script with AI...",
@@ -381,7 +401,10 @@ def create_animation_job(topic: str, description: Optional[str]) -> dict:
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat()
     }
-    save_job_to_disk(job_id)
+    
+    # Save to Redis
+    redis_client.save_job(job_id, job_data)
+    save_job_to_disk(job_id, job_data)
     
     # Generate script with Gemini
     script = generate_script_with_gemini(topic, description)
@@ -397,11 +420,13 @@ def create_animation_job(topic: str, description: Optional[str]) -> dict:
     logger.info(f"[{job_id}] Script generated: {script_filename}")
     
     # Update job with script
-    jobs_store[job_id]["script"] = script
-    jobs_store[job_id]["script_path"] = str(script_path)
-    jobs_store[job_id]["class_name"] = class_name
-    jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
-    save_job_to_disk(job_id)
+    job_data["script"] = script
+    job_data["script_path"] = str(script_path)
+    job_data["class_name"] = class_name
+    job_data["updated_at"] = datetime.now().isoformat()
+    
+    redis_client.save_job(job_id, job_data)
+    save_job_to_disk(job_id, job_data)
     
     return {
         "job_id": job_id,
@@ -411,16 +436,16 @@ def create_animation_job(topic: str, description: Optional[str]) -> dict:
     }
 
 def get_job(job_id: str) -> Optional[dict]:
-    """Get job by ID."""
-    return jobs_store.get(job_id)
+    """Get job by ID from Redis."""
+    return redis_client.get_job(job_id)
 
 def get_all_jobs() -> list:
-    """Get all jobs."""
-    return list(jobs_store.values())
+    """Get all jobs from Redis."""
+    return redis_client.get_all_jobs()
 
 def retry_job(job_id: str) -> dict:
     """Retry a failed job."""
-    job = jobs_store.get(job_id)
+    job = redis_client.get_job(job_id)
     if not job:
         raise ValueError("Job not found")
     
@@ -430,11 +455,13 @@ def retry_job(job_id: str) -> dict:
     logger.info(f"[{job_id}] Retrying failed job - Topic: {job['topic']}")
     
     # Reset job status
-    jobs_store[job_id]["status"] = "generating_script"
-    jobs_store[job_id]["message"] = "Regenerating simpler animation script..."
-    jobs_store[job_id]["error"] = None
-    jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
-    save_job_to_disk(job_id)
+    job["status"] = "generating_script"
+    job["message"] = "Regenerating simpler animation script..."
+    job["error"] = None
+    job["updated_at"] = datetime.now().isoformat()
+    
+    redis_client.save_job(job_id, job)
+    save_job_to_disk(job_id, job)
     
     # Generate new script
     script = generate_script_with_gemini(job["topic"], job.get("description"))
@@ -450,11 +477,13 @@ def retry_job(job_id: str) -> dict:
     logger.info(f"[{job_id}] New script generated: {script_filename}")
     
     # Update job with new script
-    jobs_store[job_id]["script"] = script
-    jobs_store[job_id]["script_path"] = str(script_path)
-    jobs_store[job_id]["class_name"] = class_name
-    jobs_store[job_id]["updated_at"] = datetime.now().isoformat()
-    save_job_to_disk(job_id)
+    job["script"] = script
+    job["script_path"] = str(script_path)
+    job["class_name"] = class_name
+    job["updated_at"] = datetime.now().isoformat()
+    
+    redis_client.save_job(job_id, job)
+    save_job_to_disk(job_id, job)
     
     return {
         "job_id": job_id,

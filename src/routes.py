@@ -10,12 +10,13 @@ from src.schemas import (
 from src.service import (
     create_animation_job, render_animation, get_job, 
     get_all_jobs, retry_job, find_video_file,
-    safe_filename, load_jobs_from_disk
+    safe_filename
 )
 from src.config import (
     GEMINI_API_KEY, GEMINI_MODEL, MEDIA_ROOT, 
     SCRIPTS_DIR, JOBS_DIR, ALLOWED_EXTENSIONS, MEDIA_TYPES
 )
+from src.redis_client import redis_client
 
 logger = logging.getLogger("manim_ai_server")
 router = APIRouter()
@@ -34,6 +35,13 @@ async def generate_animation(req: AnimationRequest, background_tasks: Background
             raise HTTPException(
                 status_code=500, 
                 detail="GEMINI_API_KEY not configured. Please set it in .env file"
+            )
+        
+        # Check Redis connection
+        if not redis_client.ping():
+            raise HTTPException(
+                status_code=503,
+                detail="Redis connection unavailable"
             )
         
         # Create job and generate script
@@ -290,6 +298,8 @@ async def list_jobs():
 @router.get("/health")
 async def health():
     """Health check endpoint"""
+    redis_stats = redis_client.get_stats()
+    
     return {
         "status": "ok",
         "media_root": str(MEDIA_ROOT),
@@ -298,12 +308,6 @@ async def health():
         "jobs_dir": str(JOBS_DIR),
         "active_jobs": len(get_all_jobs()),
         "gemini_api_key_configured": bool(GEMINI_API_KEY),
-        "gemini_model": GEMINI_MODEL
+        "gemini_model": GEMINI_MODEL,
+        "redis": redis_stats
     }
-
-# --- Startup Event ---
-
-@router.on_event("startup")
-async def startup_event():
-    """Load jobs from disk on startup"""
-    load_jobs_from_disk()
