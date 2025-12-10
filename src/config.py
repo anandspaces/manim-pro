@@ -24,6 +24,15 @@ MEDIA_TYPES = {
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = "gemini-3-pro-preview"
 
+# Redis Configuration
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
+
+# Job expiration (7 days)
+JOB_EXPIRATION_SECONDS = 7 * 24 * 60 * 60
+
 # Rendering settings
 RENDER_TIMEOUT = 600  # 10 minutes
 RENDER_QUALITY = "-ql"  # preview quality low
