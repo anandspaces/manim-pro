@@ -1,34 +1,81 @@
 services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: manim-redis
+    restart: unless-stopped
+    
+    ports:
+      - "6379:6379"
+    
+    volumes:
+      - redis-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    
+    command: redis-server /usr/local/etc/redis/redis.conf
+    
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    
+    networks:
+      - manim-network
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    security_opt:
+      - no-new-privileges:true
+
   manim-ai-server:
     build:
       context: .
       dockerfile: Dockerfile
-
+    
     container_name: manim-ai-server
     restart: unless-stopped
     
     ports:
       - "8020:8020"
     
-    environment:
-      - PYTHONUNBUFFERED=1
-    
     env_file:
       - .env
     
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+    
     volumes:
-      # Persistent storage
       - ./media:/app/media
       - ./scripts:/app/scripts
       - ./jobs:/app/jobs
       - ./logs:/app/logs
-
+    
+    depends_on:
+      redis:
+        condition: service_healthy
+    
     healthcheck:
       test: ["CMD", "python3", "-c", "import requests; requests.get('http://localhost:8020/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s
     
     networks:
       - manim-network
@@ -48,11 +95,9 @@ services:
         max-size: "10m"
         max-file: "3"
     
-    # Security options
     security_opt:
       - no-new-privileges:true
     
-    # Process limits
     ulimits:
       nofile:
         soft: 65536
@@ -62,3 +107,8 @@ networks:
   manim-network:
     driver: bridge
     name: manim-network
+
+volumes:
+  redis-data:
+    driver: local
+    name: manim-redis-data
