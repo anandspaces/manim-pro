@@ -4,6 +4,7 @@ import time
 from typing import Optional, Dict, List
 import redis
 from redis.exceptions import RedisError, ConnectionError
+from datetime import datetime
 
 from src.config import (
     REDIS_HOST, REDIS_PORT, REDIS_DB, 
@@ -25,16 +26,14 @@ class RedisClient:
             "decode_responses": True,
             "socket_connect_timeout": 5,
             "socket_timeout": 5,
-            "socket_keepalive": True,  # Enable TCP keepalive for better connection stability
+            "socket_keepalive": True,
             "retry_on_timeout": True,
-            "health_check_interval": 30  # Re-enable health checks every 30 seconds
+            "health_check_interval": 30
         }
         
-        # Only add password if it's set
         if REDIS_PASSWORD:
             self.connection_params["password"] = REDIS_PASSWORD
         
-        # Don't connect on init - wait for first use
         logger.info("Redis client initialized (will connect on first use)")
     
     def _connect_with_retry(self, max_retries=10, retry_delay=2):
@@ -42,7 +41,7 @@ class RedisClient:
         if self._connected and self.client:
             try:
                 self.client.ping()
-                return  # Already connected and working
+                return
             except:
                 self._connected = False
         
@@ -50,10 +49,7 @@ class RedisClient:
             try:
                 logger.info(f"Attempting to connect to Redis at {REDIS_HOST}:{REDIS_PORT} (attempt {attempt}/{max_retries})")
                 
-                # Create Redis connection
                 self.client = redis.Redis(**self.connection_params)
-                
-                # Test connection with ping
                 self.client.ping()
                 
                 self._connected = True
@@ -81,7 +77,7 @@ class RedisClient:
             self._connect_with_retry(max_retries=5, retry_delay=1)
         else:
             try:
-                self.client.ping()  # Use ping() for consistency
+                self.client.ping()
             except Exception:
                 logger.warning("Redis connection lost, attempting to reconnect...")
                 self._connected = False
@@ -96,14 +92,78 @@ class RedisClient:
         """Generate Redis key for job list"""
         return "jobs:list"
     
+    def _get_timestamp(self, job_data: dict) -> float:
+        """
+        Extract or generate a numeric timestamp from job data.
+        Returns a float timestamp suitable for Redis sorted set.
+        """
+        # Priority 1: Use timestamp_numeric if available
+        if "timestamp_numeric" in job_data:
+            try:
+                ts = job_data["timestamp_numeric"]
+                logger.debug(f"Found timestamp_numeric: {ts} (type: {type(ts)})")
+                
+                # Handle various types
+                if isinstance(ts, (int, float)):
+                    return float(ts)
+                elif isinstance(ts, str):
+                    # Try to convert string to float
+                    return float(ts)
+                else:
+                    logger.warning(f"timestamp_numeric is unexpected type: {type(ts)}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Could not convert timestamp_numeric to float: {e}")
+        
+        # Priority 2: Parse created_at ISO string
+        if "created_at" in job_data:
+            try:
+                created_at = job_data["created_at"]
+                logger.debug(f"Parsing created_at: {created_at}")
+                
+                # Handle both with and without timezone
+                if isinstance(created_at, str):
+                    if created_at.endswith('Z'):
+                        created_at = created_at[:-1] + '+00:00'
+                    
+                    dt = datetime.fromisoformat(created_at)
+                    ts = dt.timestamp()
+                    logger.debug(f"Parsed timestamp from created_at: {ts}")
+                    return ts
+            except (ValueError, AttributeError) as e:
+                logger.warning(f"Could not parse created_at: {e}")
+        
+        # Priority 3: Use current time as fallback
+        timestamp = time.time()
+        logger.warning(f"Could not extract timestamp from job data, using current time: {timestamp}")
+        return timestamp
+    
     def save_job(self, job_id: str, job_data: dict) -> bool:
         """
-        Save job to Redis
+        Save job to Redis.
+        Ensures timestamp_numeric is always present and valid.
         Returns True on success, False on failure
         """
         try:
             self._ensure_connection()
             key = self._job_key(job_id)
+            
+            # CRITICAL: Ensure timestamp_numeric exists and is valid BEFORE any operations
+            if "timestamp_numeric" not in job_data or job_data["timestamp_numeric"] is None:
+                job_data["timestamp_numeric"] = time.time()
+                logger.debug(f"Added missing timestamp_numeric for job {job_id}: {job_data['timestamp_numeric']}")
+            
+            # Validate and convert timestamp_numeric to float
+            try:
+                job_data["timestamp_numeric"] = float(job_data["timestamp_numeric"])
+            except (ValueError, TypeError) as e:
+                logger.error(f"Invalid timestamp_numeric value: {job_data.get('timestamp_numeric')} - using current time")
+                job_data["timestamp_numeric"] = time.time()
+            
+            # Get timestamp for sorted set (guaranteed to be float now)
+            timestamp = float(job_data["timestamp_numeric"])
+            
+            # Debug logging
+            logger.debug(f"Saving job {job_id} with timestamp {timestamp} (type: {type(timestamp)})")
             
             # Convert job data to JSON
             job_json = json.dumps(job_data)
@@ -112,15 +172,22 @@ class RedisClient:
             self.client.setex(key, JOB_EXPIRATION_SECONDS, job_json)
             
             # Add to job list (sorted set by creation time)
-            if "created_at" in job_data:
-                timestamp = job_data["created_at"]
-                self.client.zadd(self._job_list_key(), {job_id: timestamp})
+            self.client.zadd(self._job_list_key(), {job_id: timestamp})
             
-            logger.debug(f"Saved job {job_id} to Redis")
+            logger.debug(f"✓ Successfully saved job {job_id} to Redis")
             return True
             
         except (RedisError, ConnectionError) as e:
-            logger.error(f"Failed to save job {job_id}: {e}")
+            logger.error(f"Failed to save job {job_id} (Redis error): {e}")
+            logger.exception("Full Redis error:")
+            return False
+        except ValueError as e:
+            logger.error(f"Failed to save job {job_id} (value conversion error): {e}")
+            logger.error(f"Problematic job_data: {job_data}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error saving job {job_id}: {e}")
+            logger.exception("Full traceback:")
             return False
     
     def get_job(self, job_id: str) -> Optional[dict]:
@@ -151,10 +218,7 @@ class RedisClient:
             self._ensure_connection()
             key = self._job_key(job_id)
             
-            # Delete job data
             self.client.delete(key)
-            
-            # Remove from job list
             self.client.zrem(self._job_list_key(), job_id)
             
             logger.info(f"Deleted job {job_id} from Redis")
@@ -171,7 +235,6 @@ class RedisClient:
         """
         try:
             self._ensure_connection()
-            # Get all job IDs from sorted set (newest first)
             job_ids = self.client.zrevrange(self._job_list_key(), 0, -1)
             
             jobs = []
@@ -198,14 +261,11 @@ class RedisClient:
         """
         try:
             self._ensure_connection()
-            # Get all job IDs
             job_ids = self.client.zrange(self._job_list_key(), 0, -1)
             
             cleaned = 0
             for job_id in job_ids:
-                # Check if job key exists
                 if not self.client.exists(self._job_key(job_id)):
-                    # Remove from list if key doesn't exist
                     self.client.zrem(self._job_list_key(), job_id)
                     cleaned += 1
             
