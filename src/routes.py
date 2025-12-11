@@ -1,6 +1,7 @@
 import logging
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from src.schemas import (
@@ -27,9 +28,56 @@ router = APIRouter()
 async def generate_animation(req: AnimationRequest, background_tasks: BackgroundTasks):
     """
     Generate animation from topic using Gemini AI.
+    Checks database for existing animation first (caching).
     Returns job_id for status tracking.
     """
+    from src.database import animation_db
+    
     try:
+        # Step 0: Check if animation already exists in database
+        logger.info(f"\n=== Animation generation request ===")
+        logger.info(f"Topic: {req.topic}, Level: {req.level}")
+        logger.info(f"Subject ID: {req.subject_id}, Chapter ID: {req.chapter_id}, Topic ID: {req.topic_id}")
+        logger.info("Step 0: Checking for existing animation in database...")
+        
+        existing = animation_db.check_existing_animation(
+            level=req.level,
+            subject_id=req.subject_id,
+            chapter_id=req.chapter_id,
+            topic_id=req.topic_id
+        )
+        
+        if existing:
+            job_id = existing['job_id']
+            logger.info(f"✓ Found existing animation! Returning cached job_id: {job_id}")
+            
+            # Get job details from Redis
+            job = get_job(job_id)
+            if not job:
+                # If not in Redis, reconstruct from database
+                logger.info(f"Job {job_id} not in Redis, reconstructing from database...")
+                job = {
+                    "job_id": job_id,
+                    "status": existing["status"],
+                    "message": "Animation retrieved from cache",
+                    "video_name": existing.get("video_name"),
+                    "topic": existing.get("topic_name"),
+                    "created_at": existing["created_at"],
+                    "updated_at": existing["updated_at"]
+                }
+            
+            return {
+                "job_id": job_id,
+                "status": job["status"],
+                "message": "Animation retrieved from cache",
+                "cached": True,
+                "video_name": job.get("video_name"),
+                "script": job.get("script"),
+                "topic": job.get("topic")
+            }
+        
+        logger.info("No existing animation found. Proceeding with generation...")
+        
         # Check if API key is configured
         if not GEMINI_API_KEY:
             raise HTTPException(
@@ -46,7 +94,15 @@ async def generate_animation(req: AnimationRequest, background_tasks: Background
         
         # Create job and generate script
         try:
-            result = create_animation_job(req.topic, req.description)
+            result = create_animation_job(
+                topic=req.topic,
+                topic_id=req.topic_id,
+                subject=req.subject,
+                subject_id=req.subject_id,
+                chapter=req.chapter,
+                chapter_id=req.chapter_id,
+                level=req.level
+            )
             
             # Start background rendering
             background_tasks.add_task(
@@ -60,6 +116,7 @@ async def generate_animation(req: AnimationRequest, background_tasks: Background
                 "job_id": result["job_id"],
                 "status": "pending",
                 "message": "Animation generation started",
+                "cached": False,
                 "script": result["script"]
             }
             
@@ -81,13 +138,29 @@ async def get_job_status(job_id: str):
     """
     job = get_job(job_id)
     if not job:
+        # Try to get from database if not in Redis
+        from src.database import animation_db
+        db_animation = animation_db.get_animation_by_job_id(job_id)
+        
+        if db_animation:
+            # Reconstruct job response from database
+            return JobStatusResponse(
+                job_id=db_animation["job_id"],
+                status=db_animation["status"],
+                message=f"Animation {db_animation['status']}",
+                script=None,  # Script not stored in DB
+                video_name=db_animation.get("video_name"),
+                error=None,
+                created_at=db_animation["created_at"],
+                updated_at=db_animation["updated_at"]
+            )
+        
         raise HTTPException(status_code=404, detail="Job not found")
     
     return JobStatusResponse(
         job_id=job["job_id"],
         status=job["status"],
         message=job["message"],
-        script=job.get("script"),
         video_name=job.get("video_name"),
         error=job.get("error"),
         created_at=job["created_at"],
@@ -128,8 +201,8 @@ async def retry_job_endpoint(job_id: str, background_tasks: BackgroundTasks):
 @router.get("/get_video/{job_id}")
 async def get_video_by_job(job_id: str, request: Request):
     """
-    Get video file by job ID.
-    This retrieves the completed animation for a specific job.
+    Get video URL by job ID.
+    Returns the URL to access the video file.
     """
     client_host = request.client.host if request.client else "unknown"
     logger.info(f"Request from {client_host} - get_video job_id={job_id}")
@@ -138,17 +211,22 @@ async def get_video_by_job(job_id: str, request: Request):
         # Get job
         job = get_job(job_id)
         if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
+            # Try database
+            from src.database import animation_db
+            db_animation = animation_db.get_animation_by_job_id(job_id)
+            if db_animation and db_animation["status"] == "completed":
+                video_name = db_animation.get("video_name")
+            else:
+                raise HTTPException(status_code=404, detail="Job not found")
+        else:
+            # Check if job is completed
+            if job["status"] != "completed":
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Video not ready. Job status: {job['status']}"
+                )
+            video_name = job.get("video_name")
         
-        # Check if job is completed
-        if job["status"] != "completed":
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Video not ready. Job status: {job['status']}"
-            )
-        
-        # Get video name from job
-        video_name = job.get("video_name")
         if not video_name:
             raise HTTPException(
                 status_code=404, 
@@ -170,16 +248,22 @@ async def get_video_by_job(job_id: str, request: Request):
         except ValueError:
             raise HTTPException(status_code=403, detail="Access denied")
 
-        suffix = file_path.suffix.lower()
-        media_type = MEDIA_TYPES.get(suffix, "application/octet-stream")
+        # Get relative path from MEDIA_ROOT
+        relative_path = file_path.relative_to(MEDIA_ROOT)
         
-        logger.info(f"✓ Serving file for job {job_id}: {file_path.relative_to(MEDIA_ROOT)}")
+        # Construct URL
+        # Get the base URL from the request
+        base_url = f"{request.url.scheme}://{request.url.netloc}"
+        video_url = f"{base_url}/media/{relative_path}"
         
-        return FileResponse(
-            path=str(file_path),
-            filename=file_path.name,
-            media_type=media_type
-        )
+        logger.info(f"✓ Generated video URL for job {job_id}: {video_url}")
+        
+        return {
+            "job_id": job_id,
+            "video_name": video_name,
+            "video_url": video_url,
+            "status": "completed"
+        }
         
     except HTTPException:
         raise
@@ -200,17 +284,22 @@ async def download_video(job_id: str, request: Request):
         # Get job
         job = get_job(job_id)
         if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
+            # Try database
+            from src.database import animation_db
+            db_animation = animation_db.get_animation_by_job_id(job_id)
+            if db_animation and db_animation["status"] == "completed":
+                video_name = db_animation.get("video_name")
+            else:
+                raise HTTPException(status_code=404, detail="Job not found")
+        else:
+            # Check if job is completed
+            if job["status"] != "completed":
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Video not ready. Job status: {job['status']}"
+                )
+            video_name = job.get("video_name")
         
-        # Check if job is completed
-        if job["status"] != "completed":
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Video not ready. Job status: {job['status']}"
-            )
-        
-        # Get video name from job
-        video_name = job.get("video_name")
         if not video_name:
             raise HTTPException(
                 status_code=404, 
@@ -277,7 +366,7 @@ async def list_videos():
 
 @router.get("/list_jobs")
 async def list_jobs():
-    """List all jobs"""
+    """List all jobs from Redis"""
     jobs = get_all_jobs()
     return {
         "count": len(jobs),
@@ -292,6 +381,72 @@ async def list_jobs():
             for job in jobs
         ]
     }
+
+# --- Database-specific Endpoints ---
+
+@router.get("/check_animation")
+async def check_animation(level: int, subjectId: int, chapterId: int, topicId: int):
+    """
+    Check if animation exists in database for given parameters.
+    Returns existing job_id if found.
+    """
+    from src.database import animation_db
+    
+    try:
+        logger.info(f"Checking for animation: level={level}, subjectId={subjectId}, chapterId={chapterId}, topicId={topicId}")
+        
+        existing = animation_db.check_existing_animation(
+            level=level,
+            subject_id=subjectId,
+            chapter_id=chapterId,
+            topic_id=topicId
+        )
+        
+        if existing:
+            return {
+                "exists": True,
+                "job_id": existing["job_id"],
+                "video_name": existing.get("video_name"),
+                "status": existing["status"],
+                "created_at": existing["created_at"],
+                "topic": existing.get("topic_name")
+            }
+        else:
+            return {
+                "exists": False,
+                "job_id": None
+            }
+            
+    except Exception as e:
+        logger.error(f"Error checking animation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/database_stats")
+async def database_stats():
+    """Get database statistics"""
+    from src.database import animation_db
+    
+    try:
+        stats = animation_db.get_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Error getting database stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/list_cached_animations")
+async def list_cached_animations(limit: int = 50):
+    """List all cached animations from database"""
+    from src.database import animation_db
+    
+    try:
+        animations = animation_db.get_all_animations(limit=limit)
+        return {
+            "count": len(animations),
+            "animations": animations
+        }
+    except Exception as e:
+        logger.error(f"Error listing cached animations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- Health Check ---
 
