@@ -8,6 +8,7 @@ from src.config import (
 )
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from src.routes import router
 from src.service import load_jobs_from_disk
 from src.redis_client import redis_client
@@ -23,8 +24,22 @@ logger = logging.getLogger("manim_ai_server")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
+    from src.database import animation_db
+    
     # Startup
     logger.info("Starting up Manim AI Server...")
+    
+    # Initialize database first
+    try:
+        logger.info("Initializing SQLite database...")
+        animation_db._init_database()
+        logger.info("✓ Database initialized")
+        
+        # Show database stats
+        stats = animation_db.get_stats()
+        logger.info(f"Database: {stats.get('total_animations', 0)} cached animations")
+    except Exception as e:
+        logger.error(f"✗ Failed to initialize database: {e}")
     
     # Wait a bit for Redis to be fully ready
     logger.info("Waiting for Redis to be ready...")
@@ -60,8 +75,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ManimPro AI Animation Server",
-    version="2.0",
-    description="AI-powered Manim animation generation server",
+    version="2.0 - with SQLite Caching",
+    description="AI-powered Manim animation generation server with database caching",
     lifespan=lifespan
 )
 
@@ -76,6 +91,10 @@ app.add_middleware(
 
 # Include routes
 app.include_router(router)
+
+# Mount media directory as static files
+# This allows direct access to video files via URL
+app.mount("/media", StaticFiles(directory=str(MEDIA_ROOT)), name="media")
 
 
 def startup_message():
