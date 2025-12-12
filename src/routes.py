@@ -25,7 +25,7 @@ router = APIRouter()
 # --- Animation Generation Endpoints ---
 
 @router.post("/generate_animation")
-async def generate_animation(req: AnimationRequest, background_tasks: BackgroundTasks):
+async def generate_animation(req: AnimationRequest, background_tasks: BackgroundTasks, request: Request):
     """
     Generate animation from topic using Gemini AI.
     Checks database for existing animation first (caching).
@@ -66,12 +66,41 @@ async def generate_animation(req: AnimationRequest, background_tasks: Background
                     "updated_at": existing["updated_at"]
                 }
             
+            # Get video URL for cached animation
+            video_url = None
+            video_name = job.get("video_name")
+            
+            if video_name:
+                # Find video file
+                file_path = find_video_file(video_name)
+                if file_path:
+                    try:
+                        # Security check
+                        file_resolved = file_path.resolve()
+                        file_resolved.relative_to(MEDIA_ROOT.resolve())
+                        
+                        # Get relative path from MEDIA_ROOT
+                        relative_path = file_path.relative_to(MEDIA_ROOT)
+                        
+                        # Construct URL
+                        base_url = f"{request.url.scheme}://{request.url.netloc}"
+                        video_url = f"{base_url}/media/{relative_path}"
+                        
+                        logger.info(f"✓ Generated video URL for cached animation: {video_url}")
+                    except ValueError:
+                        logger.error(f"Security check failed for video file: {video_name}")
+                    except Exception as e:
+                        logger.error(f"Error generating video URL: {e}")
+                else:
+                    logger.warning(f"Video file not found for cached animation: {video_name}")
+            
             return {
                 "job_id": job_id,
                 "status": job["status"],
                 "message": "Animation retrieved from cache",
                 "cached": True,
-                "video_name": job.get("video_name"),
+                "video_name": video_name,
+                "video_url": video_url,
                 "script": job.get("script"),
                 "topic": job.get("topic")
             }
