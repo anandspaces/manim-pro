@@ -3,7 +3,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from src.config import (
-    MEDIA_ROOT, SCRIPTS_DIR, JOBS_DIR, 
+    MEDIA_ROOT, SCRIPTS_DIR, JOBS_DIR, AUDIO_DIR, NARRATIONS_DIR,
     GEMINI_API_KEY, GEMINI_MODEL
 )
 from fastapi import FastAPI
@@ -12,6 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from src.routes import router
 from src.service import load_jobs_from_disk
 from src.redis_client import redis_client
+from src.tts_service import initialize_tts_engine, get_available_voices
+
 
 # Setup logging
 logging.basicConfig(
@@ -27,25 +29,44 @@ async def lifespan(app: FastAPI):
     from src.database import animation_db
     
     # Startup
-    logger.info("Starting up Manim AI Server...")
+    logger.info("="*70)
+    logger.info("MANIM AI ANIMATION SERVER WITH TTS - STARTUP")
+    logger.info("="*70)
     
-    # Initialize database first
+    # Create directories
+    MEDIA_ROOT.mkdir(exist_ok=True)
+    SCRIPTS_DIR.mkdir(exist_ok=True)
+    JOBS_DIR.mkdir(exist_ok=True)
+    AUDIO_DIR.mkdir(exist_ok=True)
+    NARRATIONS_DIR.mkdir(exist_ok=True)
+    logger.info(f"✓ Directories created/verified")
+    
+    # Initialize database
     try:
         logger.info("Initializing SQLite database...")
         animation_db._init_database()
         logger.info("✓ Database initialized")
         
-        # Show database stats
         stats = animation_db.get_stats()
         logger.info(f"Database: {stats.get('total_animations', 0)} cached animations")
     except Exception as e:
         logger.error(f"✗ Failed to initialize database: {e}")
     
-    # Wait a bit for Redis to be fully ready
+    # Initialize TTS engine
+    try:
+        logger.info("Initializing TTS engine...")
+        initialize_tts_engine()
+        voices = get_available_voices()
+        logger.info(f"✓ TTS engine initialized with {len(voices)} voices: {voices}")
+    except Exception as e:
+        logger.error(f"✗ Failed to initialize TTS: {e}")
+        logger.warning("Server will continue without TTS support")
+    
+    # Wait for Redis
     logger.info("Waiting for Redis to be ready...")
     time.sleep(3)
     
-    # Try to connect to Redis
+    # Connect to Redis
     try:
         redis_client._connect_with_retry(max_retries=15, retry_delay=2)
         logger.info("✓ Redis connection established")
@@ -60,7 +81,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"✗ Failed to load jobs: {e}")
     
-    logger.info("✓ Manim AI Server startup complete")
+    logger.info("="*70)
+    logger.info("✓ Manim AI Server with TTS startup complete")
+    logger.info("="*70)
     
     yield  # Server runs here
     
@@ -74,9 +97,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="ManimPro AI Animation Server",
-    version="2.0 - with SQLite Caching",
-    description="AI-powered Manim animation generation server with database caching",
+    title="ManimPro AI Animation Server with TTS",
+    version="2.1 - with TTS Narration",
+    description="AI-powered Manim animation generation server with TTS narration and database caching",
     lifespan=lifespan
 )
 
@@ -93,28 +116,27 @@ app.add_middleware(
 app.include_router(router)
 
 # Mount media directory as static files
-# This allows direct access to video files via URL
 app.mount("/media", StaticFiles(directory=str(MEDIA_ROOT)), name="media")
+
+# Mount audio directory as static files (for audio playback)
+app.mount("/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio")
 
 
 def startup_message():
     """Display startup information"""
     logger.info("="*70)
-    logger.info("MANIM AI ANIMATION SERVER STARTUP")
+    logger.info("MANIM AI ANIMATION SERVER WITH TTS")
     logger.info("="*70)
     logger.info(f"MEDIA_ROOT: {MEDIA_ROOT}")
     logger.info(f"SCRIPTS_DIR: {SCRIPTS_DIR}")
     logger.info(f"JOBS_DIR: {JOBS_DIR}")
+    logger.info(f"AUDIO_DIR: {AUDIO_DIR}")
+    logger.info(f"NARRATIONS_DIR: {NARRATIONS_DIR}")
     logger.info(f"GEMINI_MODEL: {GEMINI_MODEL}")
     logger.info(f"GEMINI_API_KEY: {'✓ Configured' if GEMINI_API_KEY else '✗ Not set'}")
     
     if not GEMINI_API_KEY:
         logger.warning("GEMINI_API_KEY not configured! Set it in .env file")
-    
-    # Create directories
-    MEDIA_ROOT.mkdir(exist_ok=True)
-    SCRIPTS_DIR.mkdir(exist_ok=True)
-    JOBS_DIR.mkdir(exist_ok=True)
     
     logger.info("="*70)
 
