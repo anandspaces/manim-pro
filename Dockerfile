@@ -44,6 +44,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Core dependencies
+    dvisvgm \
     ffmpeg \
     libcairo2 \
     libpango-1.0-0 \
