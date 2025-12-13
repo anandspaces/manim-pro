@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse
 from src.schemas import (
     AnimationRequest, JobStatusResponse, 
 )
-from src.service import (
+from src.helper_service import (
     create_animation_job, render_animation, get_job, 
     get_all_jobs, retry_job, find_video_file,
 )
