@@ -24,7 +24,7 @@ MEDIA_TYPES = {
 
 # API Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.0-flash-exp"
+GEMINI_MODEL = "gemini-3-pro-preview"
 
 # Redis Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
