@@ -50,6 +50,7 @@ logs/
 media/
 scripts/
 jobs/
+audio/
 
 # Redis
 dump.rdb
