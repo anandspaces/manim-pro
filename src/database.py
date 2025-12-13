@@ -25,7 +25,7 @@ class AnimationDatabase:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Create animations table
+                # Create animations table with audio fields
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS animations (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,19 +39,42 @@ class AnimationDatabase:
                         job_id TEXT NOT NULL UNIQUE,
                         video_name TEXT,
                         status TEXT NOT NULL,
+                        narration_text TEXT,
+                        audio_filename TEXT,
+                        audio_duration REAL,
+                        voice_style TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         UNIQUE(level, subject_id, chapter_id, topic_id)
                     )
                 """)
                 
-                # Create index for faster lookups
+                # Check if audio columns exist, if not add them
+                cursor.execute("PRAGMA table_info(animations)")
+                columns = [row[1] for row in cursor.fetchall()]
+                
+                if 'narration_text' not in columns:
+                    logger.info("Adding narration_text column...")
+                    cursor.execute("ALTER TABLE animations ADD COLUMN narration_text TEXT")
+                
+                if 'audio_filename' not in columns:
+                    logger.info("Adding audio_filename column...")
+                    cursor.execute("ALTER TABLE animations ADD COLUMN audio_filename TEXT")
+                
+                if 'audio_duration' not in columns:
+                    logger.info("Adding audio_duration column...")
+                    cursor.execute("ALTER TABLE animations ADD COLUMN audio_duration REAL")
+                
+                if 'voice_style' not in columns:
+                    logger.info("Adding voice_style column...")
+                    cursor.execute("ALTER TABLE animations ADD COLUMN voice_style TEXT")
+                
+                # Create indexes
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_animation_lookup 
                     ON animations(level, subject_id, chapter_id, topic_id)
                 """)
                 
-                # Create index for job_id lookups
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_job_id 
                     ON animations(job_id)
@@ -68,51 +91,11 @@ class AnimationDatabase:
     def _get_connection(self):
         """Get database connection context manager"""
         conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+        conn.row_factory = sqlite3.Row
         try:
             yield conn
         finally:
             conn.close()
-    
-    def check_existing_animation(
-        self, 
-        level: int, 
-        subject_id: int, 
-        chapter_id: int, 
-        topic_id: int
-    ) -> Optional[Dict]:
-        """
-        Check if animation already exists for given parameters.
-        Returns animation data if found, None otherwise.
-        """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT * FROM animations 
-                    WHERE level = ? 
-                    AND subject_id = ? 
-                    AND chapter_id = ? 
-                    AND topic_id = ?
-                    AND status = 'completed'
-                """, (level, subject_id, chapter_id, topic_id))
-                
-                row = cursor.fetchone()
-                
-                if row:
-                    animation_data = dict(row)
-                    logger.info(
-                        f"Found existing animation: job_id={animation_data['job_id']}, "
-                        f"level={level}, subject_id={subject_id}, "
-                        f"chapter_id={chapter_id}, topic_id={topic_id}"
-                    )
-                    return animation_data
-                
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error checking existing animation: {e}")
-            return None
     
     def save_animation(
         self,
@@ -125,33 +108,39 @@ class AnimationDatabase:
         topic_name: str,
         job_id: str,
         video_name: Optional[str] = None,
-        status: str = "pending"
+        status: str = "pending",
+        narration_text: Optional[str] = None,
+        audio_filename: Optional[str] = None,
+        audio_duration: Optional[float] = None,
+        voice_style: Optional[str] = None
     ) -> bool:
-        """
-        Save animation metadata to database.
-        Returns True on success, False on failure.
-        """
+        """Save animation metadata to database."""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 now = datetime.now().isoformat()
                 
-                # Try to insert, if exists then update
                 cursor.execute("""
                     INSERT INTO animations (
                         level, subject_id, subject_name, chapter_id, chapter_name,
                         topic_id, topic_name, job_id, video_name, status,
+                        narration_text, audio_filename, audio_duration, voice_style,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(level, subject_id, chapter_id, topic_id) 
                     DO UPDATE SET
                         job_id = excluded.job_id,
                         video_name = excluded.video_name,
                         status = excluded.status,
+                        narration_text = excluded.narration_text,
+                        audio_filename = excluded.audio_filename,
+                        audio_duration = excluded.audio_duration,
+                        voice_style = excluded.voice_style,
                         updated_at = excluded.updated_at
                 """, (
                     level, subject_id, subject_name, chapter_id, chapter_name,
                     topic_id, topic_name, job_id, video_name, status,
+                    narration_text, audio_filename, audio_duration, voice_style,
                     now, now
                 ))
                 
@@ -167,18 +156,24 @@ class AnimationDatabase:
         self,
         job_id: str,
         status: str,
-        video_name: Optional[str] = None
+        video_name: Optional[str] = None,
+        audio_filename: Optional[str] = None,
+        audio_duration: Optional[float] = None
     ) -> bool:
-        """
-        Update animation status and video_name.
-        Returns True on success, False on failure.
-        """
+        """Update animation status and optional fields."""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 now = datetime.now().isoformat()
                 
-                if video_name:
+                if video_name and audio_filename:
+                    cursor.execute("""
+                        UPDATE animations 
+                        SET status = ?, video_name = ?, 
+                            audio_filename = ?, audio_duration = ?, updated_at = ?
+                        WHERE job_id = ?
+                    """, (status, video_name, audio_filename, audio_duration, now, job_id))
+                elif video_name:
                     cursor.execute("""
                         UPDATE animations 
                         SET status = ?, video_name = ?, updated_at = ?
@@ -194,7 +189,7 @@ class AnimationDatabase:
                 conn.commit()
                 
                 if cursor.rowcount > 0:
-                    logger.info(f"Updated animation status: job_id={job_id}, status={status}")
+                    logger.info(f"Updated animation: job_id={job_id}, status={status}")
                     return True
                 else:
                     logger.warning(f"No animation found to update: job_id={job_id}")
@@ -204,18 +199,44 @@ class AnimationDatabase:
             logger.error(f"Failed to update animation status: {e}")
             return False
     
+    def check_existing_animation(
+        self, 
+        level: int, 
+        subject_id: int, 
+        chapter_id: int, 
+        topic_id: int
+    ) -> Optional[Dict]:
+        """Check if animation already exists for given parameters."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT * FROM animations 
+                    WHERE level = ? 
+                    AND subject_id = ? 
+                    AND chapter_id = ? 
+                    AND topic_id = ?
+                    AND status = 'completed'
+                """, (level, subject_id, chapter_id, topic_id))
+                
+                row = cursor.fetchone()
+                
+                if row:
+                    return dict(row)
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error checking existing animation: {e}")
+            return None
+    
     def get_animation_by_job_id(self, job_id: str) -> Optional[Dict]:
         """Get animation data by job_id"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT * FROM animations WHERE job_id = ?
-                """, (job_id,))
-                
+                cursor.execute("SELECT * FROM animations WHERE job_id = ?", (job_id,))
                 row = cursor.fetchone()
                 return dict(row) if row else None
-                
         except Exception as e:
             logger.error(f"Error getting animation by job_id: {e}")
             return None
@@ -230,10 +251,7 @@ class AnimationDatabase:
                     ORDER BY created_at DESC 
                     LIMIT ?
                 """, (limit,))
-                
-                rows = cursor.fetchall()
-                return [dict(row) for row in rows]
-                
+                return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"Error getting all animations: {e}")
             return []
@@ -243,19 +261,9 @@ class AnimationDatabase:
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    DELETE FROM animations WHERE job_id = ?
-                """, (job_id,))
-                
+                cursor.execute("DELETE FROM animations WHERE job_id = ?", (job_id,))
                 conn.commit()
-                
-                if cursor.rowcount > 0:
-                    logger.info(f"Deleted animation: job_id={job_id}")
-                    return True
-                else:
-                    logger.warning(f"No animation found to delete: job_id={job_id}")
-                    return False
-                    
+                return cursor.rowcount > 0
         except Exception as e:
             logger.error(f"Failed to delete animation: {e}")
             return False
@@ -266,11 +274,9 @@ class AnimationDatabase:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Total animations
                 cursor.execute("SELECT COUNT(*) as total FROM animations")
                 total = cursor.fetchone()["total"]
                 
-                # By status
                 cursor.execute("""
                     SELECT status, COUNT(*) as count 
                     FROM animations 
@@ -278,7 +284,6 @@ class AnimationDatabase:
                 """)
                 by_status = {row["status"]: row["count"] for row in cursor.fetchall()}
                 
-                # By level
                 cursor.execute("""
                     SELECT level, COUNT(*) as count 
                     FROM animations 
