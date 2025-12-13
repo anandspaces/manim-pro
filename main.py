@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from src.routes import router
-from src.service import load_jobs_from_disk
+from src.helper_service import load_jobs_from_disk
 from src.redis_client import redis_client
 from src.tts_service import initialize_tts_engine, get_available_voices
 
