@@ -1,17 +1,12 @@
 import logging
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-
 from src.schemas import (
     AnimationRequest, JobStatusResponse, 
-    VideoListItem, JobListItem
 )
 from src.service import (
     create_animation_job, render_animation, get_job, 
     get_all_jobs, retry_job, find_video_file,
-    safe_filename
 )
 from src.config import (
     GEMINI_API_KEY, GEMINI_MODEL, MEDIA_ROOT, 
