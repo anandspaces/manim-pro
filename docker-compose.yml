@@ -64,7 +64,7 @@ services:
       - ./media:/app/media
       - ./scripts:/app/scripts
       - ./jobs:/app/jobs
-      - ./logs:/app/logs
+      - ./audio:/apps/audio
     
     depends_on:
       redis:
