@@ -6,7 +6,7 @@ from src.config import (
     GEMINI_API_KEY, GEMINI_MODEL
 )
 
-from src.helper_service import sanitize_class_name
+from src.utilities import sanitize_class_name
 
 logger = logging.getLogger("manim_ai_server")
 

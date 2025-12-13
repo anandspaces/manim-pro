@@ -19,25 +19,13 @@ from src.tts_service import (
     generate_narration_audio
 )
 
+from src.utilities import (
+    sanitize_class_name, safe_filename
+)
+
 from src.gemini_service import generate_script_with_gemini
 
 logger = logging.getLogger("manim_ai_server")
-
-# --- Helper Functions ---
-
-def sanitize_class_name(topic: str) -> str:
-    words = ''.join(c if c.isalnum() or c.isspace() else ' ' for c in topic).split()
-    class_name = ''.join(word.capitalize() for word in words)
-    if not class_name:
-        class_name = "Animation"
-    elif class_name[0].isdigit():
-        class_name = "Anim" + class_name
-    return class_name + "Scene"
-
-def safe_filename(name: str) -> str:
-    if "/" in name or "\\" in name or ".." in name:
-        raise ValueError("Invalid filename (contains path separators).")
-    return name
 
 def find_video_file(filename: str) -> Optional[Path]:
     filename_lower = filename.lower()
@@ -47,8 +35,6 @@ def find_video_file(filename: str) -> Optional[Path]:
         if p.is_file() and p.name.lower() == filename_lower:
             return p
     return None
-
-
 
 def save_job_to_disk(job_id: str, job_data: dict):
     try:
@@ -76,9 +62,6 @@ def load_jobs_from_disk():
         redis_client.cleanup_expired_jobs()
     except Exception as e:
         logger.error(f"Failed to load jobs from disk: {e}")
-
-
-
 
 def render_animation(job_id: str, script_path: Path, class_name: str):
     """Render Manim animation in background."""
@@ -178,7 +161,6 @@ def render_animation(job_id: str, script_path: Path, class_name: str):
             redis_client.save_job(job_id, job)
             save_job_to_disk(job_id, job)
             animation_db.update_animation_status(job_id, "failed")
-
 
 def create_animation_job(
     topic: str, topic_id: int, subject: str, subject_id: int,
@@ -305,7 +287,6 @@ def create_animation_job(
         redis_client.save_job(job_id, job_data)
         save_job_to_disk(job_id, job_data)
         raise
-
 
 def get_job(job_id: str) -> Optional[dict]:
     return redis_client.get_job(job_id)
