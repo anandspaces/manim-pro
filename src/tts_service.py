@@ -54,10 +54,74 @@ def get_available_voices() -> list[str]:
     return list(_voice_styles.keys())
 
 
-def generate_narration_text(topic: str) -> str:
+def get_narration_length_for_level(level: int) -> tuple[int, int]:
     """
-    Generate narration text for the topic using Gemini.
-    Returns 2-3 sentence narration suitable for TTS.
+    Determine narration length based on grade level.
+    Returns (min_chars, max_chars)
+    """
+    if level <= 5:  # Elementary (Grades 1-5)
+        return (200, 350)
+    elif level <= 8:  # Middle School (Grades 6-8)
+        return (300, 500)
+    elif level <= 10:  # High School (Grades 9-10)
+        return (400, 650)
+    else:  # Advanced (Grades 11-12+)
+        return (500, 800)
+
+
+def get_complexity_guidance(level: int) -> str:
+    """Get complexity and language guidance based on grade level"""
+    if level <= 5:
+        return """
+- Use simple, everyday words
+- Short sentences (10-15 words each)
+- Concrete examples and analogies
+- Encouraging, friendly tone
+- Avoid technical jargon
+"""
+    elif level <= 8:
+        return """
+- Mix of simple and intermediate vocabulary
+- Medium-length sentences
+- Introduce basic technical terms with explanations
+- Engaging and informative tone
+- Connect to real-world applications
+"""
+    elif level <= 10:
+        return """
+- Academic vocabulary appropriate for high school
+- Varied sentence structure
+- Technical terms with context
+- Clear, professional tone
+- Include practical applications and implications
+"""
+    else:
+        return """
+- Advanced academic vocabulary
+- Complex sentence structures
+- Precise technical terminology
+- Scholarly yet accessible tone
+- Discuss theoretical foundations and advanced applications
+"""
+
+
+def generate_narration_text(
+    topic: str,
+    subject: str,
+    chapter: str,
+    level: int
+) -> str:
+    """
+    Generate context-aware narration text using Gemini.
+    
+    Args:
+        topic: Specific topic to cover
+        subject: Subject area (e.g., "Science", "Mathematics")
+        chapter: Chapter context (e.g., "Forces and Motion")
+        level: Grade level (1-12+)
+    
+    Returns:
+        Educational narration text suitable for TTS
     """
     try:
         if not GEMINI_API_KEY:
@@ -66,33 +130,91 @@ def generate_narration_text(topic: str) -> str:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel("gemini-2.0-flash-exp")
         
-        prompt = f"""Generate a clear, concise narration script for an educational animation about: {topic}
+        min_chars, max_chars = get_narration_length_for_level(level)
+        complexity = get_complexity_guidance(level)
+        
+        # Determine target duration (reading speed: ~150 words/min = 2.5 words/sec)
+        target_duration = (min_chars + max_chars) // 2 / 5  # rough estimate in seconds
+        
+        prompt = f"""Generate an educational narration script for an animated video.
 
-Requirements:
-- 2-3 sentences maximum
-- Simple, easy-to-understand language
-- Explain the core concept
-- Suitable for text-to-speech (no special characters, equations, or symbols)
-- Total length: 100-200 characters
-- Educational and engaging tone
+CONTEXT:
+- Subject: {subject}
+- Chapter: {chapter}
+- Topic: {topic}
+- Grade Level: {level}
+- Target Length: {min_chars}-{max_chars} characters
+- Target Duration: ~{target_duration:.0f} seconds of speech
 
-Example for "Pythagorean Theorem":
-"The Pythagorean theorem is a fundamental principle in geometry. It states that in a right triangle, the square of the hypotenuse equals the sum of squares of the other two sides. This relationship is expressed as a squared plus b squared equals c squared."
+NARRATION STRUCTURE:
+1. **Hook/Introduction (1-2 sentences)**: 
+   - Grab attention with a relatable question, fact, or scenario
+   - Connect topic to student's world or prior knowledge
 
-Generate ONLY the narration text, no title, no extra explanation:"""
+2. **Core Explanation (3-5 sentences)**:
+   - Explain the key concept clearly and accurately
+   - Use appropriate examples for grade level {level}
+   - Build understanding progressively
+   - Include visual cues where relevant (e.g., "Imagine...", "Picture...", "Let's observe...")
+
+3. **Application/Significance (1-2 sentences)**:
+   - Show why this matters
+   - Connect to real-world applications or further learning
+   - End with insight or thought-provoking point
+
+LANGUAGE COMPLEXITY FOR GRADE {level}:
+{complexity}
+
+TECHNICAL REQUIREMENTS:
+- NO special characters, equations, or symbols (e.g., NO "a² + b² = c²")
+- Spell out mathematical expressions (e.g., "a squared plus b squared equals c squared")
+- NO markdown formatting, asterisks, or emphasis marks
+- Proper pronunciation-friendly text for TTS
+- Natural speech patterns with good flow
+- Total length: {min_chars}-{max_chars} characters
+
+EXAMPLE for Grade 8 - Science - Forces and Motion - "Newton's First Law":
+"Have you ever wondered why you lurch forward when a car suddenly stops? This phenomenon is explained by Newton's First Law of Motion, also called the law of inertia. It states that an object at rest stays at rest, and an object in motion continues moving at constant velocity, unless acted upon by an external force. Your body wants to keep moving forward when the car brakes, because there's no force immediately stopping you—that's inertia in action. Understanding this law helps explain everything from seat belt safety to how rockets move through space. It's one of the most fundamental principles governing motion in our universe."
+
+Now generate a {min_chars}-{max_chars} character narration for:
+Subject: {subject}
+Chapter: {chapter}  
+Topic: {topic}
+Grade Level: {level}
+
+Return ONLY the narration text, no title, no extra formatting:"""
 
         response = model.generate_content(prompt)
         narration = response.text.strip()
         
-        # Remove any markdown or quotes
+        # Clean up text
         narration = narration.replace("**", "").replace("*", "")
         narration = narration.strip('"').strip("'")
+        narration = narration.replace("```", "").replace("`", "")
         
-        # Limit length
-        if len(narration) > 500:
-            narration = narration[:497] + "..."
+        # Ensure length is within bounds
+        if len(narration) > max_chars:
+            # Intelligently truncate at sentence boundary
+            sentences = narration.split('. ')
+            truncated = []
+            current_length = 0
+            
+            for sentence in sentences:
+                if current_length + len(sentence) + 2 <= max_chars:
+                    truncated.append(sentence)
+                    current_length += len(sentence) + 2
+                else:
+                    break
+            
+            narration = '. '.join(truncated)
+            if not narration.endswith('.'):
+                narration += '.'
         
-        logger.info(f"Generated narration ({len(narration)} chars): {narration[:100]}...")
+        logger.info(
+            f"Generated narration for Level {level} ({len(narration)} chars): "
+            f"{narration[:100]}..."
+        )
+        
         return narration
         
     except Exception as e:
@@ -184,8 +306,6 @@ def get_audio_info(audio_path: Path) -> Dict:
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
         
-        # Read audio file to get duration
-        import soundfile as sf
         data, sample_rate = sf.read(str(audio_path))
         duration = len(data) / sample_rate
         file_size = audio_path.stat().st_size
