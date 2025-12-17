@@ -82,6 +82,48 @@ def auto_fix_script(script: str) -> str:
 
 
 
+def clean_script_output(script: str) -> str:
+    """
+    Robustly clean LLM output to extract only Python code.
+    Handles markdown fences, explanatory text, and other artifacts.
+    """
+    # Find the first Python import statement
+    import_keywords = ['from manim import', 'import manim', 'import numpy']
+    first_import_pos = len(script)
+    
+    for keyword in import_keywords:
+        pos = script.find(keyword)
+        if pos != -1 and pos < first_import_pos:
+            first_import_pos = pos
+    
+    # If we found an import, start from there
+    if first_import_pos < len(script):
+        script = script[first_import_pos:]
+    
+    # Remove markdown code fences (anywhere in text)
+    script = script.replace('```python', '')
+    script = script.replace('```', '')
+    
+    # Remove any trailing explanatory text after the last class definition
+    # Look for the last closing of the construct method
+    lines = script.split('\n')
+    last_meaningful_line = len(lines) - 1
+    
+    # Find last line that's part of the class (has indentation or is closing brace)
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i].rstrip()
+        if line and (line.startswith('    ') or line.startswith('\t') or 'class ' in line):
+            last_meaningful_line = i
+            break
+    
+    script = '\n'.join(lines[:last_meaningful_line + 1])
+    
+    # Clean up whitespace
+    script = script.strip()
+    
+    return script
+
+
 def generate_script_with_gemini(
     topic: str,
     subject: str, 
@@ -111,8 +153,34 @@ def generate_script_with_gemini(
         class_name = sanitize_class_name(topic)
         complexity = get_animation_complexity(level)
         
-        # Base prompt with educational context
-        base_prompt = f"""You are an expert educational animator creating a Manim visualization.
+        # Audio integration section
+        if audio_file_path and audio_duration:
+            audio_section = f"""
+AUDIO INTEGRATION (CRITICAL):
+- Audio file: {audio_file_path}
+- Duration: {audio_duration:.2f} seconds
+- **FIRST line in construct() MUST be**: self.add_sound("{audio_file_path}")
+- **Total animation MUST match audio duration**: {audio_duration:.2f}s
+- Sync visual changes with narration pacing
+- Use self.wait() for natural pauses
+
+TIMING BREAKDOWN for {audio_duration:.1f}s:
+- Introduction (title/hook): 15-20% of duration ({audio_duration * 0.15:.1f}-{audio_duration * 0.20:.1f}s)
+- Core content (main animation): 60-70% ({audio_duration * 0.60:.1f}-{audio_duration * 0.70:.1f}s)
+- Conclusion/summary: 10-15% ({audio_duration * 0.10:.1f}-{audio_duration * 0.15:.1f}s)
+"""
+            duration_target = audio_duration
+            audio_line = f'self.add_sound("{audio_file_path}")'
+        else:
+            audio_section = "# No audio provided - create 10 second animation"
+            duration_target = 10
+            audio_line = '# No audio'
+        
+        # Subject-specific guidance
+        subject_guidance = get_subject_guidance(subject)
+        
+        # Main prompt
+        prompt = f"""You are an expert educational animator creating a Manim visualization.
 
 EDUCATIONAL CONTEXT:
 - Subject: {subject}
@@ -135,332 +203,81 @@ CRITICAL PERFORMANCE RULES:
    - Grades 11-12+: Max 15 objects
 4. **NO physics simulations** (no add_updater, particles, or per-frame calculations)
 5. **Efficient animations**: Create, Write, FadeIn, FadeOut, Transform, ReplacementTransform
-"""
-        
-        # Add audio integration
-        if audio_file_path and audio_duration:
-            audio_section = f"""
-AUDIO INTEGRATION (CRITICAL):
-- Audio file: {audio_file_path}
-- Duration: {audio_duration:.2f} seconds
-- **FIRST line in construct() MUST be**: self.add_sound("{audio_file_path}")
-- **Total animation MUST match audio duration**: {audio_duration:.2f}s
-- Sync visual changes with narration pacing
-- Use self.wait() for natural pauses
 
-TIMING BREAKDOWN for {audio_duration:.1f}s:
-- Introduction (title/hook): 15-20% of duration ({audio_duration * 0.15:.1f}-{audio_duration * 0.20:.1f}s)
-- Core content (main animation): 60-70% ({audio_duration * 0.60:.1f}-{audio_duration * 0.70:.1f}s)
-- Conclusion/summary: 10-15% ({audio_duration * 0.10:.1f}-{audio_duration * 0.15:.1f}s)
-"""
-            duration_target = audio_duration
-        else:
-            audio_section = "# No audio provided - create 10 second animation"
-            duration_target = 10
-        
-        # Content guidance based on subject
-        subject_guidance = ""
-        if "science" in subject.lower() or "physics" in subject.lower():
-            subject_guidance = """
-SCIENCE VISUALIZATION:
-- Show processes, cycles, or systems
-- Use arrows to indicate force, flow, or direction  
-- Color-code different components
-- Demonstrate cause and effect relationships
-- Include labels for key parts
-"""
-        elif "math" in subject.lower():
-            subject_guidance = """
-MATHEMATICS VISUALIZATION:
-- Show geometric relationships visually
-- Use color to distinguish different elements
-- Animate transformations step-by-step
-- Display equations as Text (spell out if complex)
-- Demonstrate concepts with concrete shapes
-"""
-        elif "biology" in subject.lower():
-            subject_guidance = """
-BIOLOGY VISUALIZATION:
-- Represent biological structures with simple shapes
-- Use color to show different cell types, organisms, etc.
-- Animate processes like cell division, energy flow
-- Label important structures
-- Show scale and organization
-"""
-        
-        prompt = base_prompt + audio_section + subject_guidance + f"""
-CONTENT REQUIREMENTS:
-1. **Educational accuracy**: Content must be scientifically/mathematically correct
-2. **Progressive complexity**: Build from simple to complex
-3. **Visual storytelling**: Each animation should add to understanding
-4. **Clear labels**: Use Text objects to label key concepts (appropriate font size for grade {level})
-5. **Color meaning**: Use color purposefully to distinguish concepts
-6. **Smooth flow**: Transitions should feel natural and help understanding
+{audio_section}
+
+{subject_guidance}
 
 CRITICAL CODING RULES:
 1. **ALL positions must use NumPy arrays for arithmetic**:
    ✓ CORRECT: pos_top = np.array([0, 2.0, 0])
-   ✗ WRONG:   pos_top = [0, 2.0, 0]  # This breaks when doing pos_top + [x, y, z]
+   ✗ WRONG:   pos_top = [0, 2.0, 0]
 
 2. **When doing position math, ALWAYS wrap in np.array()**:
    ✓ CORRECT: Arrow(start=pos_top + np.array([0.8, -0.5, 0]), end=pos_right)
-   ✗ WRONG:   Arrow(start=pos_top + [0.8, -0.5, 0], end=pos_right)  # This concatenates!
+   ✗ WRONG:   Arrow(start=pos_top + [0.8, -0.5, 0], end=pos_right)
 
-3. **Alternative: Use explicit coordinates**:
-   ✓ CORRECT: Arrow(start=[0.8, 1.5, 0], end=[3.0, 0.8, 0])
+3. **NO random number generation**: Use fixed positions only
+4. **Test before return**: Ensure all animations are valid
 
-4. **Avoid runtime calculations**: Pre-calculate all positions
-5. **Test before return**: Ensure all animations are valid
-
-WHY THIS MATTERS:
-Python list addition concatenates:     [0, 2, 0] + [0.8, -0.5, 0] = [0, 2, 0, 0.8, -0.5, 0]  ❌ 6 elements
-NumPy array addition does math: np.array([0, 2, 0]) + np.array([0.8, -0.5, 0]) = [0.8, 1.5, 0]  ✓ 3 elements
-
-TEMPLATE STRUCTURE:
-```python
+TEMPLATE:
+```
 from manim import *
 import numpy as np
 
 class {class_name}(Scene):
     def construct(self):
         # 1. AUDIO INTEGRATION
-        {'self.add_sound("' + audio_file_path + '")' if audio_file_path else '# No audio'}
+        {audio_line}
         
-        # 2. DEFINE POSITIONS AS NUMPY ARRAYS (CRITICAL!)
+        # 2. DEFINE POSITIONS AS NUMPY ARRAYS
+        pos_center = np.array([0, 0, 0])
         pos_top = np.array([0, 2.0, 0])
-        pos_right = np.array([3.5, 0, 0])
         pos_bottom = np.array([0, -2.0, 0])
-        pos_left = np.array([-3.5, 0, 0])
         
-        # 3. TITLE/INTRODUCTION (3-5 seconds)
-        title = Text("{topic}", font_size=APPROPRIATE_SIZE)
-        subtitle = Text("{chapter}", font_size=SMALLER_SIZE).next_to(title, DOWN)
-        
+        # 3. TITLE/INTRODUCTION
+        title = Text("{topic}", font_size=48)
         self.play(Write(title), run_time=1.5)
-        self.play(FadeIn(subtitle), run_time=0.8)
-        self.wait(0.5)
+        self.play(title.animate.scale(0.6).to_edge(UP), run_time=1)
         
-        # Move title to make room for content
-        self.play(
-            title.animate.scale(0.5).to_edge(UP),
-            FadeOut(subtitle),
-            run_time=1
-        )
+        # 4. MAIN CONTENT
+        # [Your educational animation here]
         
-        # 4. MAIN EDUCATIONAL CONTENT
-        
-        # Create objects at base positions
-        circle_top = Circle(radius=0.6, color=BLUE).move_to(pos_top)
-        circle_right = Circle(radius=0.6, color=GREEN).move_to(pos_right)
-        
-        # Connect with arrows - USE NUMPY ARRAY ARITHMETIC
-        arrow_1 = Arrow(
-            start=pos_top + np.array([0.8, -0.5, 0]),     # ✓ CORRECT
-            end=pos_right + np.array([-0.5, 0.8, 0]),     # ✓ CORRECT
-            color=WHITE,
-            buff=0.1
-        )
-        
-        # OR use explicit coordinates (also safe)
-        arrow_2 = Arrow(
-            start=[3.5, -0.5, 0],   # Explicit coordinates
-            end=[0, -1.5, 0],
-            color=WHITE,
-            buff=0.1
-        )
-        
-        self.play(Create(circle_top), Create(circle_right))
-        self.play(Create(arrow_1), Create(arrow_2))
-        
-        # 5. CONCLUSION (2-3 seconds)
-        self.wait(0.5)
+        # 5. CONCLUSION
+        self.wait(1)
 ```
 
-EXAMPLE - Kinetic Theory (Grade 10 Science):
-```python
-from manim import *
-import numpy as np
-
-class KineticTheoryScene(Scene):
-    def construct(self):
-        # Audio integration
-        self.add_sound("/path/to/audio.wav")
-        
-        # Title
-        title = Text("Kinetic Theory of Matter", font_size=48)
-        subtitle = Text("Matter & Energy", font_size=36).next_to(title, DOWN)
-        
-        self.play(Write(title), run_time=1.5)
-        self.play(FadeIn(subtitle), run_time=0.8)
-        self.wait(0.5)
-        
-        self.play(
-            title.animate.scale(0.5).to_edge(UP),
-            FadeOut(subtitle),
-            run_time=1
-        )
-        
-        # Section 1: States of matter (8s)
-        solid = Circle(radius=1, color=BLUE).shift(LEFT * 3.5)
-        liquid = Circle(radius=1, color=GREEN)
-        gas = Circle(radius=1, color=RED).shift(RIGHT * 3.5)
-        
-        solid_label = Text("Solid", font_size=36).next_to(solid, DOWN)
-        liquid_label = Text("Liquid", font_size=36).next_to(liquid, DOWN)
-        gas_label = Text("Gas", font_size=36).next_to(gas, DOWN)
-        
-        self.play(
-            Create(solid), Create(liquid), Create(gas),
-            Write(solid_label), Write(liquid_label), Write(gas_label),
-            run_time=2
-        )
-        
-        # Section 2: Particle arrangement (10s)
-        # Fixed positions for solid particles (tight arrangement)
-        solid_positions = [
-            [-3.5, 0.3, 0], [-3.3, 0.3, 0], [-3.7, 0.3, 0],
-            [-3.5, 0, 0], [-3.3, 0, 0], [-3.7, 0, 0],
-            [-3.5, -0.3, 0], [-3.3, -0.3, 0], [-3.7, -0.3, 0]
-        ]
-        solid_particles = VGroup(*[Dot(pos, radius=0.08, color=BLUE_A) for pos in solid_positions])
-        
-        # Liquid particles (looser)
-        liquid_positions = [
-            [0, 0.4, 0], [0.3, 0.2, 0], [-0.3, 0.3, 0],
-            [0, 0, 0], [0.35, -0.1, 0], [-0.35, 0, 0],
-            [0, -0.4, 0], [0.3, -0.3, 0], [-0.3, -0.35, 0]
-        ]
-        liquid_particles = VGroup(*[Dot(pos, radius=0.08, color=GREEN_A) for pos in liquid_positions])
-        
-        # Gas particles (spread out)
-        gas_positions = [
-            [3.5, 0.6, 0], [3.8, 0.3, 0], [3.2, 0.4, 0],
-            [3.5, 0, 0], [3.9, -0.2, 0], [3.1, 0.1, 0],
-            [3.5, -0.5, 0], [3.7, -0.6, 0], [3.3, -0.4, 0]
-        ]
-        gas_particles = VGroup(*[Dot(pos, radius=0.08, color=RED_A) for pos in gas_positions])
-        
-        self.play(
-            FadeIn(solid_particles),
-            FadeIn(liquid_particles),
-            FadeIn(gas_particles),
-            run_time=1.5
-        )
-        self.wait(1)
-        
-        # Section 3: Show motion (12s)
-        motion_text = Text("Particles in constant motion", font_size=40).to_edge(DOWN)
-        self.play(Write(motion_text), run_time=1.5)
-        
-        # Animate different motion levels (fixed positions, not random)
-        self.play(
-            solid_particles[0].animate.shift([0.05, 0.05, 0]),
-            solid_particles[2].animate.shift([-0.05, 0.03, 0]),
-            run_time=0.8
-        )
-        
-        self.play(
-            liquid_particles[1].animate.shift([0.15, -0.1, 0]),
-            liquid_particles[4].animate.shift([-0.2, 0.15, 0]),
-            liquid_particles[7].animate.shift([0.1, 0.2, 0]),
-            run_time=1.2
-        )
-        
-        self.play(
-            gas_particles[0].animate.shift([0.3, -0.4, 0]),
-            gas_particles[3].animate.shift([-0.4, 0.35, 0]),
-            gas_particles[6].animate.shift([0.35, 0.3, 0]),
-            gas_particles[8].animate.shift([-0.3, -0.3, 0]),
-            run_time=1.5
-        )
-        self.wait(1)
-        
-        # Section 4: Temperature relationship (8s)
-        temp_text = Text("Higher Temperature = Faster Motion", font_size=40)
-        arrow = Arrow(start=LEFT*2, end=RIGHT*2, color=YELLOW)
-        temp_group = VGroup(temp_text, arrow).arrange(DOWN).to_edge(DOWN)
-        
-        self.play(
-            Transform(motion_text, temp_text),
-            Create(arrow),
-            run_time=2
-        )
-        
-        # Show gas particles moving faster (color change)
-        self.play(
-            gas_particles.animate.set_color(ORANGE),
-            gas_particles[1].animate.shift([0.4, 0.4, 0]),
-            gas_particles[5].animate.shift([-0.4, -0.35, 0]),
-            run_time=2
-        )
-        self.wait(1)
-        
-        # Conclusion (3s)
-        self.play(
-            FadeOut(solid), FadeOut(liquid), FadeOut(gas),
-            FadeOut(solid_label), FadeOut(liquid_label), FadeOut(gas_label),
-            FadeOut(solid_particles), FadeOut(liquid_particles), FadeOut(gas_particles),
-            FadeOut(motion_text), FadeOut(arrow),
-            run_time=2
-        )
-        
-        summary = Text("Matter = Particles in Motion", font_size=48)
-        self.play(Write(summary), run_time=1.5)
-        self.wait(1)
-        self.play(FadeOut(summary), run_time=1)
-        
-        self.wait(0.5)
-```
-
-This example shows:
-✓ Fixed 3D positions [x, y, 0]
-✓ Pre-defined particle arrays
-✓ Controlled animations with specific shifts
-✓ No random number generation
-✓ Clear educational progression
-✓ Proper timing for audio sync
-
-SYNTAX REQUIREMENTS:
-- Class name: {class_name}
-- Import: from manim import *
-- Optional: import numpy as np (only if needed for fixed arrays)
-- Rate functions: smooth, linear, rush_into, rush_from, there_and_back
-- NO markdown, NO explanations outside code
-- Return ONLY executable Python code
-- ALL positions must be 3D: [x, y, 0] or use UP/DOWN/LEFT/RIGHT
-- NO np.random - use fixed positions only
-- Keep performance optimized
+CRITICAL OUTPUT FORMAT:
+- Return ONLY the raw Python code
+- NO markdown code fences (no ```python or ```)  
+- NO explanatory text before or after the code
+- NO comments outside the Python class
+- Start your response directly with: from manim import *
+- End your response with the last line of the construct method
 
 QUALITY CHECKLIST:
 ✓ Educationally accurate content
 ✓ Appropriate complexity for grade {level}
-✓ Visual elements support learning
 ✓ Clear, readable labels
 ✓ Smooth, purposeful animations
-✓ Timing matches audio narration
 ✓ Total duration = {duration_target:.1f}s
+✓ NO markdown formatting in response
 
-REMEMBER: 
-- ALWAYS use np.array([x, y, 0]) when defining positions that will be used in arithmetic
-- ALWAYS wrap offsets in np.array() when adding to positions
-- Test: pos + np.array([dx, dy, 0]) ✓  vs  pos + [dx, dy, 0] ✗
-
-Generate the complete, elaborate Manim script now:
-"""
+Generate the complete Manim script now. Remember: Output ONLY Python code, starting with 'from manim import *':"""
 
         response = model.generate_content(prompt)
         script = response.text.strip()
         
-        # Clean markdown
-        if script.startswith("```python"):
-            script = script.replace("```python", "").replace("```", "").strip()
-        elif script.startswith("```"):
-            script = script.replace("```", "").strip()
+        # Robust cleanup
+        script = clean_script_output(script)
+        
+        # Validate it starts correctly
+        if not script.startswith('from manim import') and not script.startswith('import'):
+            logger.error(f"Script doesn't start with import: {script[:100]}")
+            raise ValueError("Generated script has invalid format")
         
         # Auto-fix common errors
         script = auto_fix_script(script)
-        
-        # Validate and fix positioning errors
         script = validate_and_fix_script(script)
         
         # Verify audio integration
@@ -483,6 +300,47 @@ Generate the complete, elaborate Manim script now:
         logger.error(f"Script generation error: {e}")
         raise Exception(f"Failed to generate script: {str(e)}")
 
+
+def get_subject_guidance(subject: str) -> str:
+    """Get subject-specific visualization guidance"""
+    subject_lower = subject.lower()
+    
+    if "science" in subject_lower or "physics" in subject_lower:
+        return """
+SCIENCE VISUALIZATION:
+- Show processes, cycles, or systems
+- Use arrows to indicate force, flow, or direction  
+- Color-code different components
+- Demonstrate cause and effect relationships
+- Include labels for key parts
+"""
+    elif "math" in subject_lower:
+        return """
+MATHEMATICS VISUALIZATION:
+- Show geometric relationships visually
+- Use color to distinguish different elements
+- Animate transformations step-by-step
+- Display equations as Text (spell out if complex)
+- Demonstrate concepts with concrete shapes
+"""
+    elif "biology" in subject_lower:
+        return """
+BIOLOGY VISUALIZATION:
+- Represent biological structures with simple shapes
+- Use color to show different cell types, organisms, etc.
+- Animate processes like cell division, energy flow
+- Label important structures
+- Show scale and organization
+"""
+    else:
+        return """
+GENERAL VISUALIZATION:
+- Use clear visual metaphors
+- Color-code related concepts
+- Show relationships with arrows/lines
+- Label all important elements
+- Build understanding progressively
+"""
 
 def get_animation_complexity(level: int) -> str:
     """Get animation complexity guidance based on grade level"""
