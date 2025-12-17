@@ -34,3 +34,22 @@ class JobListItem(BaseModel):
     topic: Optional[str] = None
     created_at: str
     video_name: Optional[str] = None
+
+class CacheCheckRequest(BaseModel):
+    """Request model for checking animation cache"""
+    topic_id: int
+    chapter_id: int
+    subject_id: int
+    level: int
+    chapter: str
+    topic: str
+    subject: str
+
+class CacheCheckResponse(BaseModel):
+    """Response model for cache check"""
+    cached: bool
+    job_id: Optional[str] = None
+    video_name: Optional[str] = None
+    status: Optional[str] = None
+    created_at: Optional[str] = None
+    message: str

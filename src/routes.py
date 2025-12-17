@@ -2,7 +2,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from fastapi.responses import FileResponse
 from src.schemas import (
-    AnimationRequest, JobStatusResponse, 
+    AnimationRequest, JobStatusResponse,
+    CacheCheckRequest, CacheCheckResponse
 )
 from src.helper_service import (
     create_animation_job, render_animation, get_job, 
@@ -471,6 +472,68 @@ async def list_cached_animations(limit: int = 50):
     except Exception as e:
         logger.error(f"Error listing cached animations: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@router.post("/check_cache")
+async def check_animation_cache(req: CacheCheckRequest):
+    """
+    Check if animation exists in cache.
+    
+    Returns:
+        - cached: True if animation exists and is completed
+        - job_id: Job ID if cached
+        - video_name: Video filename if available
+        - status: Animation status
+        - message: Descriptive message
+    """
+    from src.database import animation_db
+    
+    try:
+        logger.info(
+            f"Cache check request - Level: {req.level}, "
+            f"Subject ID: {req.subject_id}, Chapter ID: {req.chapter_id}, "
+            f"Topic ID: {req.topic_id}"
+        )
+        
+        # Check if animation exists in database
+        existing = animation_db.check_existing_animation(
+            level=req.level,
+            subject_id=req.subject_id,
+            chapter_id=req.chapter_id,
+            topic_id=req.topic_id
+        )
+        
+        if existing:
+            logger.info(
+                f"✓ Cache HIT - Job ID: {existing['job_id']}, "
+                f"Status: {existing['status']}"
+            )
+            
+            return CacheCheckResponse(
+                cached=True,
+                job_id=existing["job_id"],
+                video_name=existing.get("video_name"),
+                status=existing["status"],
+                created_at=existing["created_at"],
+                message=f"Animation found in cache for '{req.topic}'"
+            )
+        else:
+            logger.info(
+                f"✗ Cache MISS - No animation found for Level {req.level}, "
+                f"Subject {req.subject_id}, Chapter {req.chapter_id}, "
+                f"Topic {req.topic_id}"
+            )
+            
+            return CacheCheckResponse(
+                cached=False,
+                message=f"No cached animation found for '{req.topic}'. New generation required."
+            )
+            
+    except Exception as e:
+        logger.error(f"Error checking animation cache: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to check cache: {str(e)}"
+        )
 
 # --- Health Check ---
 
