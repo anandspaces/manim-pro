@@ -49,7 +49,7 @@ class CacheCheckResponse(BaseModel):
     """Response model for cache check"""
     cached: bool
     job_id: Optional[str] = None
-    video_name: Optional[str] = None
+    video_url: Optional[str] = None
     status: Optional[str] = None
     created_at: Optional[str] = None
     message: str

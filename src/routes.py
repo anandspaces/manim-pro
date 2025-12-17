@@ -474,18 +474,20 @@ async def list_cached_animations(limit: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
     
 @router.post("/check_cache")
-async def check_animation_cache(req: CacheCheckRequest):
+async def check_animation_cache(req: CacheCheckRequest, request: Request):
     """
     Check if animation exists in cache.
     
     Returns:
         - cached: True if animation exists and is completed
         - job_id: Job ID if cached
-        - video_name: Video filename if available
+        - video_url: Full URL to video file if available
         - status: Animation status
         - message: Descriptive message
     """
     from src.database import animation_db
+    from src.helper_service import find_video_file
+    from src.config import MEDIA_ROOT
     
     try:
         logger.info(
@@ -503,6 +505,31 @@ async def check_animation_cache(req: CacheCheckRequest):
         )
         
         if existing:
+            video_url = None
+            video_name = existing.get("video_name")
+            
+            # Generate video URL if video exists
+            if video_name:
+                file_path = find_video_file(video_name)
+                if file_path:
+                    try:
+                        # Security check
+                        file_resolved = file_path.resolve()
+                        file_resolved.relative_to(MEDIA_ROOT.resolve())
+                        
+                        # Get relative path from MEDIA_ROOT
+                        relative_path = file_path.relative_to(MEDIA_ROOT)
+                        
+                        # Construct URL
+                        base_url = f"{request.url.scheme}://{request.url.netloc}"
+                        video_url = f"{base_url}/media/{relative_path}"
+                        
+                        logger.info(f"✓ Generated video URL: {video_url}")
+                    except ValueError:
+                        logger.error(f"Security check failed for video file: {video_name}")
+                    except Exception as e:
+                        logger.error(f"Error generating video URL: {e}")
+            
             logger.info(
                 f"✓ Cache HIT - Job ID: {existing['job_id']}, "
                 f"Status: {existing['status']}"
@@ -511,7 +538,7 @@ async def check_animation_cache(req: CacheCheckRequest):
             return CacheCheckResponse(
                 cached=True,
                 job_id=existing["job_id"],
-                video_name=existing.get("video_name"),
+                video_url=video_url,
                 status=existing["status"],
                 created_at=existing["created_at"],
                 message=f"Animation found in cache for '{req.topic}'"
@@ -534,7 +561,6 @@ async def check_animation_cache(req: CacheCheckRequest):
             status_code=500, 
             detail=f"Failed to check cache: {str(e)}"
         )
-
 # --- Health Check ---
 
 @router.get("/health")
