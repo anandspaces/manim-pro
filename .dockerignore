@@ -80,3 +80,6 @@ logs/
 tmp/
 temp/
 *.tmp
+
+*.db
+audio/narrations
