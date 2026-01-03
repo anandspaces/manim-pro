@@ -3,6 +3,7 @@ import soundfile as sf
 from pathlib import Path
 from typing import Optional, Dict
 import google.generativeai as genai
+import threading
 
 from src.tts.helper import load_text_to_speech, load_voice_style, Style, TextToSpeech
 from src.config import (
@@ -13,40 +14,61 @@ from src.config import (
 
 logger = logging.getLogger("manim_ai_server")
 
-# Global TTS engine (loaded once)
+# Global TTS engine (loaded once) with thread lock
 _tts_engine: Optional[TextToSpeech] = None
 _voice_styles: Dict[str, Style] = {}
+_tts_lock = threading.Lock()
+_tts_initialized = False
 
 
 def initialize_tts_engine():
     """Initialize TTS engine and load voice styles (called at startup)"""
-    global _tts_engine, _voice_styles
+    global _tts_engine, _voice_styles, _tts_initialized
     
-    if _tts_engine is not None:
-        logger.info("TTS engine already initialized")
-        return
-    
-    try:
-        logger.info(f"Loading TTS engine from {ONNX_DIR}...")
-        _tts_engine = load_text_to_speech(str(ONNX_DIR), USE_GPU_TTS)
-        logger.info("✓ TTS engine loaded successfully")
+    with _tts_lock:
+        if _tts_initialized and _tts_engine is not None:
+            logger.info("TTS engine already initialized")
+            return
         
-        # Load voice styles
-        logger.info(f"Loading voice styles from {VOICE_STYLES_DIR}...")
-        for voice_file in VOICE_STYLES_DIR.glob("*.json"):
-            voice_name = voice_file.stem
-            style = load_voice_style([str(voice_file)], verbose=False)
-            _voice_styles[voice_name] = style
-            logger.info(f"  Loaded voice style: {voice_name}")
-        
-        if not _voice_styles:
-            logger.warning("No voice styles loaded!")
-        else:
-            logger.info(f"✓ Loaded {len(_voice_styles)} voice styles: {list(_voice_styles.keys())}")
+        try:
+            logger.info(f"Loading TTS engine from {ONNX_DIR}...")
+            _tts_engine = load_text_to_speech(str(ONNX_DIR), USE_GPU_TTS)
+            logger.info("✓ TTS engine loaded successfully")
             
-    except Exception as e:
-        logger.error(f"Failed to initialize TTS engine: {e}")
-        raise
+            # Load voice styles
+            logger.info(f"Loading voice styles from {VOICE_STYLES_DIR}...")
+            for voice_file in VOICE_STYLES_DIR.glob("*.json"):
+                voice_name = voice_file.stem
+                style = load_voice_style([str(voice_file)], verbose=False)
+                _voice_styles[voice_name] = style
+                logger.info(f"  Loaded voice style: {voice_name}")
+            
+            if not _voice_styles:
+                logger.warning("No voice styles loaded!")
+            else:
+                logger.info(f"✓ Loaded {len(_voice_styles)} voice styles: {list(_voice_styles.keys())}")
+            
+            _tts_initialized = True
+            logger.info("✓ TTS initialization complete")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize TTS engine: {e}")
+            _tts_engine = None
+            _voice_styles = {}
+            _tts_initialized = False
+            raise
+
+
+def ensure_tts_initialized():
+    """Ensure TTS is initialized, initialize if needed"""
+    global _tts_initialized
+    
+    if not _tts_initialized or _tts_engine is None:
+        logger.warning("TTS engine not initialized, initializing now...")
+        try:
+            initialize_tts_engine()
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize TTS engine: {e}")
 
 
 def get_available_voices() -> list[str]:
@@ -240,8 +262,11 @@ def generate_narration_audio(
     """
     global _tts_engine, _voice_styles
     
+    # Ensure TTS is initialized
+    ensure_tts_initialized()
+    
     if _tts_engine is None:
-        raise RuntimeError("TTS engine not initialized. Call initialize_tts_engine() first.")
+        raise RuntimeError("TTS engine failed to initialize")
     
     if voice_style not in _voice_styles:
         logger.warning(f"Voice style '{voice_style}' not found, using default: {DEFAULT_VOICE_STYLE}")
