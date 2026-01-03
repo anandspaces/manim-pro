@@ -87,10 +87,6 @@ RUN python3 -c "from manim import *; print('✓ Manim imported successfully')" &
     ffmpeg -version | head -n 1 && \
     echo "✓ Container build successful"
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python3 -c "import requests; requests.get('http://localhost:8020/health')" || exit 1
-
 # Expose port
 EXPOSE 8020
 
