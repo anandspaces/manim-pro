@@ -41,6 +41,11 @@ async def lifespan(app: FastAPI):
     NARRATIONS_DIR.mkdir(exist_ok=True)
     logger.info(f"✓ Directories created/verified")
     
+    # Mount static files AFTER directories exist
+    app.mount("/media", StaticFiles(directory=str(MEDIA_ROOT)), name="media")
+    app.mount("/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio")
+    logger.info("✓ Static file mounts configured")
+    
     # Initialize database
     try:
         logger.info("Initializing SQLite database...")
@@ -114,13 +119,6 @@ app.add_middleware(
 
 # Include routes
 app.include_router(router)
-
-# Mount media directory as static files
-app.mount("/media", StaticFiles(directory=str(MEDIA_ROOT)), name="media")
-
-# Mount audio directory as static files (for audio playback)
-app.mount("/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio")
-
 
 def startup_message():
     """Display startup information"""
