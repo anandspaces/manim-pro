@@ -72,3 +72,5 @@ htmlcov/
 .ruff_cache/
 
 *.db
+
+assets/
