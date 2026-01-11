@@ -3,7 +3,8 @@ from typing import Optional
 import google.generativeai as genai
 
 from src.config import (
-    GEMINI_API_KEY, GEMINI_MODEL
+    GEMINI_API_KEY, GEMINI_MODEL,
+    LOGO_PATH, LOGO_ENABLED, LOGO_POSITION, LOGO_SCALE, LOGO_OPACITY
 )
 
 from src.utilities import sanitize_class_name
@@ -81,7 +82,6 @@ def auto_fix_script(script: str) -> str:
     return script
 
 
-
 def clean_script_output(script: str) -> str:
     """
     Robustly clean LLM output to extract only Python code.
@@ -124,6 +124,38 @@ def clean_script_output(script: str) -> str:
     return script
 
 
+def get_logo_positioning_code(position: str, scale: float, opacity: float) -> dict:
+    """
+    Generate logo positioning code based on configuration.
+    
+    Args:
+        position: One of "TOP_LEFT", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_RIGHT"
+        scale: Scale factor for logo (relative to frame width)
+        opacity: Transparency level (0.0 to 1.0)
+    
+    Returns:
+        Dict with position_code, scale, and opacity
+    """
+    
+    # Position mappings using Manim's config and proper NumPy array syntax
+    # Includes padding of 0.2 units from edges
+    positions = {
+        "TOP_LEFT": "np.array([-config.frame_width/2 + logo_width/2 + 0.2, config.frame_height/2 - logo_height/2 - 0.2, 0])",
+        "TOP_RIGHT": "np.array([config.frame_width/2 - logo_width/2 - 0.2, config.frame_height/2 - logo_height/2 - 0.2, 0])",
+        "BOTTOM_LEFT": "np.array([-config.frame_width/2 + logo_width/2 + 0.2, -config.frame_height/2 + logo_height/2 + 0.2, 0])",
+        "BOTTOM_RIGHT": "np.array([config.frame_width/2 - logo_width/2 - 0.2, -config.frame_height/2 + logo_height/2 + 0.2, 0])"
+    }
+    
+    # Default to BOTTOM_RIGHT if invalid position
+    position_code = positions.get(position, positions["BOTTOM_RIGHT"])
+    
+    return {
+        "position_code": position_code,
+        "scale": scale,
+        "opacity": opacity
+    }
+
+
 def generate_script_with_gemini(
     topic: str,
     subject: str, 
@@ -134,6 +166,7 @@ def generate_script_with_gemini(
 ) -> str:
     """
     Generate context-aware Manim animation script using Gemini API.
+    Includes logo watermark integration.
     
     Args:
         topic: Specific topic to animate
@@ -176,6 +209,41 @@ TIMING BREAKDOWN for {audio_duration:.1f}s:
             duration_target = 10
             audio_line = '# No audio'
         
+        # Logo integration section
+        if LOGO_ENABLED:
+            logo_config = get_logo_positioning_code(LOGO_POSITION, LOGO_SCALE, LOGO_OPACITY)
+            logo_section = f"""
+LOGO WATERMARK (MANDATORY):
+- Logo file: {LOGO_PATH}
+- Position: {LOGO_POSITION}
+- Scale: {LOGO_SCALE} (relative to frame width)
+- Opacity: {LOGO_OPACITY}
+
+LOGO IMPLEMENTATION (MUST FOLLOW EXACTLY):
+1. Load logo: logo = ImageMobject("{LOGO_PATH}")
+2. Scale: logo.scale({LOGO_SCALE})
+3. Set opacity: logo.set_opacity({LOGO_OPACITY})
+4. Get dimensions: logo_width = logo.width; logo_height = logo.height
+5. Position: logo.move_to({logo_config['position_code']})
+6. Add to scene: self.add(logo)
+7. Logo stays visible throughout entire animation
+
+CRITICAL: Add logo immediately after audio, BEFORE title/content.
+"""
+            logo_code = f"""
+        # Add logo watermark
+        logo = ImageMobject("{LOGO_PATH}")
+        logo.scale({LOGO_SCALE})
+        logo.set_opacity({LOGO_OPACITY})
+        logo_width = logo.width
+        logo_height = logo.height
+        logo.move_to({logo_config['position_code']})
+        self.add(logo)
+"""
+        else:
+            logo_section = "# No logo configured"
+            logo_code = "        # No logo"
+        
         # Subject-specific guidance
         subject_guidance = get_subject_guidance(subject)
         
@@ -206,6 +274,8 @@ CRITICAL PERFORMANCE RULES:
 
 {audio_section}
 
+{logo_section}
+
 {subject_guidance}
 
 CRITICAL CODING RULES:
@@ -218,7 +288,8 @@ CRITICAL CODING RULES:
    ✗ WRONG:   Arrow(start=pos_top + [0.8, -0.5, 0], end=pos_right)
 
 3. **NO random number generation**: Use fixed positions only
-4. **Test before return**: Ensure all animations are valid
+4. **Import ImageMobject** if logo is used: from manim import *
+5. **Test before return**: Ensure all animations are valid
 
 TEMPLATE:
 ```
@@ -229,6 +300,7 @@ class {class_name}(Scene):
     def construct(self):
         # 1. AUDIO INTEGRATION
         {audio_line}
+        {logo_code}
         
         # 2. DEFINE POSITIONS AS NUMPY ARRAYS
         pos_center = np.array([0, 0, 0])
@@ -261,6 +333,7 @@ QUALITY CHECKLIST:
 ✓ Clear, readable labels
 ✓ Smooth, purposeful animations
 ✓ Total duration = {duration_target:.1f}s
+✓ Logo watermark added (if enabled)
 ✓ NO markdown formatting in response
 
 Generate the complete Manim script now. Remember: Output ONLY Python code, starting with 'from manim import *':"""
@@ -293,7 +366,45 @@ Generate the complete Manim script now. Remember: Output ONLY Python code, start
                     break
             script = '\n'.join(lines)
         
-        logger.info(f"Generated {len(script)} char script for {topic} (Level {level})")
+        # Verify logo integration (if enabled)
+        if LOGO_ENABLED and "ImageMobject" not in script:
+            logger.warning("Generated script missing logo, adding it...")
+            lines = script.split('\n')
+            for i, line in enumerate(lines):
+                if 'def construct(self):' in line:
+                    # Find where to insert (after audio if present, otherwise right after construct)
+                    insert_index = i + 1
+                    
+                    # Skip audio lines if present
+                    for j in range(i + 1, min(i + 5, len(lines))):
+                        if 'add_sound' in lines[j]:
+                            insert_index = j + 1
+                            break
+                    
+                    indent = ' ' * 8
+                    logo_lines = [
+                        '',
+                        f'{indent}# Add logo watermark',
+                        f'{indent}logo = ImageMobject("{LOGO_PATH}")',
+                        f'{indent}logo.scale({LOGO_SCALE})',
+                        f'{indent}logo.set_opacity({LOGO_OPACITY})',
+                        f'{indent}logo_width = logo.width',
+                        f'{indent}logo_height = logo.height',
+                        f'{indent}logo.move_to({logo_config["position_code"]})',
+                        f'{indent}self.add(logo)',
+                        ''
+                    ]
+                    
+                    for idx, logo_line in enumerate(logo_lines):
+                        lines.insert(insert_index + idx, logo_line)
+                    break
+            
+            script = '\n'.join(lines)
+        
+        logger.info(
+            f"Generated {len(script)} char script for {topic} (Level {level})" + 
+            (f" with logo at {LOGO_POSITION}" if LOGO_ENABLED else "")
+        )
         return script
         
     except Exception as e:
@@ -390,4 +501,3 @@ ANIMATION STYLE FOR ADVANCED (Grades 11-12+):
 - Include mathematical representations as text
 - Demonstrate advanced relationships
 """
-

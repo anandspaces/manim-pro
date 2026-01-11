@@ -12,6 +12,7 @@ SCRIPTS_DIR = BASE_DIR / "scripts"
 JOBS_DIR = BASE_DIR / "jobs"
 AUDIO_DIR = BASE_DIR / "audio"
 NARRATIONS_DIR = AUDIO_DIR / "narrations"
+PUBLIC_DIR = BASE_DIR / "public"
 
 # File settings
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
@@ -51,6 +52,15 @@ USE_GPU_TTS = False
 # Audio settings
 MAX_NARRATION_LENGTH = 500  # characters
 AUDIO_FORMAT = "wav"
+
+# Logo Configuration
+LOGO_PATH = PUBLIC_DIR / "dextora-logo.webp"
+LOGO_ENABLED = LOGO_PATH.exists()  # Auto-detect if logo exists
+
+# Logo appearance settings
+LOGO_POSITION = os.getenv("LOGO_POSITION", "BOTTOM_RIGHT")  # TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT
+LOGO_SCALE = float(os.getenv("LOGO_SCALE", "0.3"))  # Scale factor (0.1 to 0.3 recommended)
+LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "0.7"))  # Opacity (0.0 to 1.0)
 
 # Logging
 LOG_LEVEL = "INFO"
