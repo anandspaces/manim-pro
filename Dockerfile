@@ -76,8 +76,8 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy application code
 COPY . .
 
-# Create necessary directories with proper permissions
-RUN mkdir -p /app/media /app/scripts /app/jobs /app/logs && \
+# Create necessary directories with proper permissions (INCLUDING PUBLIC_DIR)
+RUN mkdir -p /app/media /app/scripts /app/jobs /app/logs /app/public && \
     chmod -R 755 /app
 
 # Verify installation
